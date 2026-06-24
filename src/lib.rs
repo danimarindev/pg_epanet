@@ -1,5 +1,6 @@
 use pgrx::prelude::*;
 
+mod ffi;
 mod inp;
 
 ::pgrx::pg_module_magic!(name, version);
@@ -345,8 +346,7 @@ fn epanet_import(
 /// Usa la EPANET 2.3 C toolkit oficial (OWA-EPANET). Devuelve el run_id generado.
 #[pg_extern]
 fn epanet_simulate(network_id: i32) -> i32 {
-    #[allow(non_upper_case_globals, clippy::useless_conversion)]
-    use epanet_sys::*;
+    use crate::ffi::*;
     use std::ffi::{CStr, CString};
 
     // 1. Leer el INP almacenado
@@ -405,8 +405,8 @@ fn epanet_simulate(network_id: i32) -> i32 {
     let (n_nodes, n_links) = unsafe {
         let mut nn: i32 = 0;
         let mut nl: i32 = 0;
-        EN_getcount(ph, EN_CountType_EN_NODECOUNT as i32, &mut nn);
-        EN_getcount(ph, EN_CountType_EN_LINKCOUNT as i32, &mut nl);
+        EN_getcount(ph, EN_NODECOUNT, &mut nn);
+        EN_getcount(ph, EN_LINKCOUNT, &mut nl);
         (nn, nl)
     };
 
@@ -428,9 +428,9 @@ fn epanet_simulate(network_id: i32) -> i32 {
                 let mut head: f64 = 0.0;
                 let mut pressure: f64 = 0.0;
                 let mut demand: f64 = 0.0;
-                EN_getnodevalue(ph, i, EN_NodeProperty_EN_HEAD as i32, &mut head);
-                EN_getnodevalue(ph, i, EN_NodeProperty_EN_PRESSURE as i32, &mut pressure);
-                EN_getnodevalue(ph, i, EN_NodeProperty_EN_DEMAND as i32, &mut demand);
+                EN_getnodevalue(ph, i, EN_HEAD, &mut head);
+                EN_getnodevalue(ph, i, EN_PRESSURE, &mut pressure);
+                EN_getnodevalue(ph, i, EN_DEMAND, &mut demand);
                 let name = CStr::from_ptr(buf.as_ptr())
                     .to_string_lossy().replace('\'', "''");
                 // Convertir NaN/Inf a NULL para SQL
@@ -460,9 +460,9 @@ fn epanet_simulate(network_id: i32) -> i32 {
                 let mut flow: f64 = 0.0;
                 let mut velocity: f64 = 0.0;
                 let mut headloss: f64 = 0.0;
-                EN_getlinkvalue(ph, i, EN_LinkProperty_EN_FLOW as i32, &mut flow);
-                EN_getlinkvalue(ph, i, EN_LinkProperty_EN_VELOCITY as i32, &mut velocity);
-                EN_getlinkvalue(ph, i, EN_LinkProperty_EN_HEADLOSS as i32, &mut headloss);
+                EN_getlinkvalue(ph, i, EN_FLOW, &mut flow);
+                EN_getlinkvalue(ph, i, EN_VELOCITY, &mut velocity);
+                EN_getlinkvalue(ph, i, EN_HEADLOSS, &mut headloss);
                 let name = CStr::from_ptr(buf.as_ptr())
                     .to_string_lossy().replace('\'', "''");
                 let fv = if flow.is_finite() { format!("{flow}") } else { "NULL".into() };
