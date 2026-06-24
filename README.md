@@ -2,7 +2,7 @@
 
 PostgreSQL extension (written in Rust via [pgrx](https://github.com/pgcentralfoundation/pgrx)) that parses EPANET `.inp` water network files and materialises them as queryable SQL tables with PostGIS geometry.
 
-> **Status:** pre-release — see [Releases](https://github.com/danimarindev/pg_epanet/releases) for tagged versions.
+> **Status:** [v0.1.0](https://github.com/danimarindev/pg_epanet/releases/tag/v0.1.0) released — see [CHANGELOG.md](CHANGELOG.md) for details.
 
 ## Why pg_epanet?
 
@@ -12,17 +12,26 @@ For users who already store infrastructure data in PostGIS this eliminates the i
 
 ## Features
 
-- **Import** an EPANET INP file into permanent tables with a single function call
-- **PostGIS geometry** generated automatically from `[COORDINATES]` and `[VERTICES]` sections
-- **Hydraulic simulation** via the official OWA-EPANET 2.3 C toolkit (statically linked — no external installation required)
-- **Simulation results** stored in queryable tables (`node_results`, `link_results`)
-- Works on **managed PostgreSQL** (RDS, Supabase, etc.) — the INP is passed as `text`, no server filesystem access needed
+- **Import** an EPANET INP into permanent tables with a single function call
+- **PostGIS geometry** — nodes as `Point`, pipes as `LineString` (with ordered `[VERTICES]`), pumps/valves as direct links
+- **Hydraulic EPS simulation** via the official OWA-EPANET 2.3 C toolkit (statically linked — no external install)
+- **Per-timestep results** stored in `node_results` and `link_results` (`step` column, full Extended Period Simulation)
+- **Schema bootstrap** — all tables, indexes, and views created at `CREATE EXTENSION pg_epanet`
+- **Delete** networks and all associated data with `epanet_delete`
+- Works on **managed PostgreSQL** (RDS, Supabase, etc.) — the INP is passed as `text`, no server filesystem read required for import
+
+### INP sections supported (v0.1.0)
+
+Import and table-returning functions exist for: `[JUNCTIONS]`, `[RESERVOIRS]`, `[TANKS]`, `[PIPES]`, `[PUMPS]`, `[VALVES]`, `[COORDINATES]`, `[VERTICES]`.
+
+Not yet imported: patterns, curves, options, times, controls, rules, sources, reactions, quality, and other metadata sections — see [ROADMAP.md](ROADMAP.md).
 
 ## Requirements
 
-- PostgreSQL 13–18
-- [PostGIS](https://postgis.net/) extension (installed automatically when you `CREATE EXTENSION pg_epanet CASCADE`)
-- Rust + [pgrx](https://github.com/pgcentralfoundation/pgrx) (for building from source)
+- PostgreSQL 13–18 (pgrx features for each major version; development target is PG 18)
+- [PostGIS](https://postgis.net/) — installed automatically with `CREATE EXTENSION pg_epanet CASCADE`
+- Rust + [pgrx](https://github.com/pgcentralfoundation/pgrx) 0.19.1 (for building from source)
+- For `epanet_simulate`: the Postgres server process must be able to write temporary files under `/tmp`
 
 ## Docker
 
@@ -38,10 +47,10 @@ The image uses `postgres:18-trixie` with PostGIS 3 from PGDG (native arm64; the 
 Check out a tagged version and build against your PostgreSQL installation:
 
 ```bash
-git checkout v0.1.0-rc.1   # or v0.1.0
+git checkout v0.1.0
 cargo install cargo-pgrx --version '=0.19.1'
 cargo pgrx init
-cargo pgrx install --release --features pg18 --pg-config $(which pg_config)
+cargo pgrx install --release --features pg18 --no-default-features --pg-config $(which pg_config)
 ```
 
 Then in psql:
@@ -66,18 +75,18 @@ SELECT epanet_import('my_network', $inp$
 $inp$, 4326) AS network_id;
 
 -- 3. Query the imported data
-SELECT name, elevation, pressure, geom
+SELECT name, elevation, demand, ST_AsText(geom) AS wkt
 FROM epanet.junctions
 WHERE network_id = 1;
 
--- 4. Run a hydraulic simulation
+-- 4. Run a hydraulic simulation (EPS — all timesteps)
 SELECT epanet_simulate(1) AS run_id;
 
--- 5. Inspect results
-SELECT node_id, round(pressure::numeric, 2) AS pressure_m
+-- 5. Inspect results (filter by timestep if needed)
+SELECT step, node_id, round(pressure::numeric, 2) AS pressure_m
 FROM epanet.node_results
 WHERE run_id = 1
-ORDER BY pressure ASC
+ORDER BY step, pressure ASC
 LIMIT 10;
 ```
 
@@ -102,7 +111,7 @@ SELECT epanet_import('my_network', txt, 25830) FROM inp;
 epanet_import(network_name text, inp_text text, srid int DEFAULT 5367) → int
 ```
 
-Parses the INP and writes all sections to permanent tables under the `epanet` schema. Returns the `network_id`.
+Parses the INP and writes all supported sections to permanent tables under the `epanet` schema. Returns the `network_id`. Each call creates a new network row; same-name networks are not replaced.
 
 ### Simulation
 
@@ -110,7 +119,7 @@ Parses the INP and writes all sections to permanent tables under the `epanet` sc
 epanet_simulate(network_id int) → int
 ```
 
-Runs a full hydraulic simulation using OWA-EPANET 2.3 and stores results in `epanet.node_results` and `epanet.link_results`. Returns the `run_id`.
+Runs a full Extended Period Simulation (EPS) using OWA-EPANET 2.3. Stores per-timestep results in `epanet.node_results` (head, pressure, demand) and `epanet.link_results` (flow, velocity, headloss). Returns the `run_id`. Fatal solver errors (code ≥ 100) abort the simulation; warning codes 1–99 are tolerated but not yet surfaced as PostgreSQL warnings.
 
 ### Delete
 
@@ -128,7 +137,7 @@ These functions parse the INP text in-query and return rows — useful for ad-ho
 |---|---|
 | `epanet_junctions(inp_text)` | name, elevation, demand, pattern |
 | `epanet_reservoirs(inp_text)` | name, head, pattern |
-| `epanet_tanks(inp_text)` | name, elevation, levels, diameter, volume_curve |
+| `epanet_tanks(inp_text)` | name, elevation, levels, diameter, min_volume, volume_curve, overflow |
 | `epanet_pipes(inp_text)` | name, node1, node2, length, diameter, roughness, minor_loss, status |
 | `epanet_pumps(inp_text)` | name, node1, node2, pump_type, head_curve, power, speed, pattern |
 | `epanet_valves(inp_text)` | name, node1, node2, diameter, valve_type, setting, minor_loss |
@@ -137,40 +146,56 @@ These functions parse the INP text in-query and return rows — useful for ad-ho
 
 ## Schema
 
-After `epanet_import`, the `epanet` schema contains:
+Created at `CREATE EXTENSION pg_epanet`:
 
 **Network catalogue**
 - `networks` — one row per imported network (name, SRID, import timestamp, original INP text)
 
 **Topology**
-- `junctions`, `reservoirs`, `tanks` — nodes with `geom geometry(Point)`
-- `pipes`, `pumps`, `valves` — links with `geom geometry(LineString)`
-- `coordinates`, `vertices` — raw geometry data
+- `junctions`, `reservoirs`, `tanks` — nodes with `geom geometry(Point)` and GiST index
+- `pipes`, `pumps`, `valves` — links with `geom geometry(LineString)` and GiST index
+- `coordinates`, `vertices` — raw geometry data (vertices ordered by `idx`)
 - `nodes` — unified view of all node types
 
 **Simulation results**
-- `simulation_runs` — one row per simulation run
-- `node_results` — head, pressure, demand per node per timestep
-- `link_results` — flow, velocity, headloss per link per timestep
+- `simulation_runs` — one row per simulation run (`n_steps` = timesteps solved)
+- `node_results` — head, pressure, demand per node per `step`
+- `link_results` — flow, velocity, headloss per link per `step`
 
 ## Building from source
 
 ```bash
 cargo install cargo-pgrx --version '=0.19.1'
 cargo pgrx init
-cargo pgrx run pg18   # compiles, starts sandbox, opens psql
+cargo pgrx run pg18 --features pg18 --no-default-features   # compile, start sandbox, open psql
 ```
 
 Inside psql after code changes:
+
 ```sql
 DROP EXTENSION pg_epanet CASCADE;
 CREATE EXTENSION pg_epanet CASCADE;
 ```
 
 Run the test suite:
+
 ```bash
-cargo pgrx test pg18
+cargo pgrx test pg18 --features pg18 --no-default-features
 ```
+
+## Releasing
+
+Releases are managed with the Rust `xtask` tool (Keep a Changelog + GitHub Releases):
+
+```bash
+# write changes under ## [Unreleased] in CHANGELOG.md, then:
+cargo xtask release 0.2.0 --create-github-release --yes
+
+# if the tag is already pushed but GitHub Release failed:
+cargo xtask github-release 0.2.0
+```
+
+See `scripts/release.sh` (thin wrapper) and `xtask/` for details.
 
 ## Roadmap
 
