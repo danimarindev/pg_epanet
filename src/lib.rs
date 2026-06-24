@@ -390,18 +390,7 @@ fn epanet_simulate(network_id: i32) -> i32 {
         ph
     };
 
-    // 4. Resolver hidráulica completa (EPS)
-    let ec = unsafe { EN_solveH(ph) };
-    if ec > 1 {
-        // código 0 = ok, código 1 = warnings no fatales
-        unsafe { EN_close(ph); EN_deleteproject(ph); }
-        let _ = std::fs::remove_file(&inp_path);
-        let _ = std::fs::remove_file(&rpt_path);
-        let _ = std::fs::remove_file(&out_path);
-        error!("EN_solveH failed (code {})", ec);
-    }
-
-    // 5. Leer conteos
+    // 4. Leer conteos (antes de abrir el solver)
     let (n_nodes, n_links) = unsafe {
         let mut nn: i32 = 0;
         let mut nl: i32 = 0;
@@ -410,20 +399,42 @@ fn epanet_simulate(network_id: i32) -> i32 {
         (nn, nl)
     };
 
-    // 6. Registrar simulación
-    let run_id = Spi::get_one::<i32>(&format!(
-        "INSERT INTO epanet.simulation_runs(network_id, n_steps) \
-         VALUES ({network_id}, 1) RETURNING id"
-    ))
-    .unwrap_or_else(|e| error!("SPI error al insertar simulation_run: {e:?}"))
-    .unwrap();
+    // 5. Abrir solver hidráulico EPS y lanzar el loop
+    let open_ec = unsafe { EN_openH(ph) };
+    if open_ec >= 100 {
+        unsafe { EN_close(ph); EN_deleteproject(ph); }
+        let _ = std::fs::remove_file(&inp_path);
+        let _ = std::fs::remove_file(&rpt_path);
+        let _ = std::fs::remove_file(&out_path);
+        error!("EN_openH failed (code {})", open_ec);
+    }
+    unsafe { EN_initH(ph, EN_NOSAVE) };
 
-    // 7. Recopilar resultados de nodos
-    let node_vals: String = {
-        let mut buf = vec![0i8; 64];
-        let mut parts = Vec::with_capacity(n_nodes as usize);
-        for i in 1..=n_nodes {
-            unsafe {
+    // Acumular filas de resultados por paso
+    let mut node_parts: Vec<String> = Vec::new();
+    let mut link_parts: Vec<String> = Vec::new();
+    let mut n_steps: i32 = 0;
+
+    loop {
+        let mut current_time: i64 = 0;
+        let ec = unsafe { EN_runH(ph, &mut current_time) };
+        // Codes 1-99: solver warnings (pump out of range, disconnected network, etc.).
+        // Codes >= 100: fatal errors that prevent valid results.
+        if ec >= 100 {
+            unsafe { EN_closeH(ph); EN_close(ph); EN_deleteproject(ph); }
+            let _ = std::fs::remove_file(&inp_path);
+            let _ = std::fs::remove_file(&rpt_path);
+            let _ = std::fs::remove_file(&out_path);
+            error!("EN_runH failed (code {}) at t={}s", ec, current_time);
+        }
+        // TODO: emitir warning de PostgreSQL para ec 1-99 (evitar macro warning! por ahora)
+
+        let step = n_steps;
+
+        // Resultados de nodos para este paso
+        unsafe {
+            let mut buf = vec![0i8; 64];
+            for i in 1..=n_nodes {
                 EN_getnodeid(ph, i, buf.as_mut_ptr());
                 let mut head: f64 = 0.0;
                 let mut pressure: f64 = 0.0;
@@ -433,29 +444,18 @@ fn epanet_simulate(network_id: i32) -> i32 {
                 EN_getnodevalue(ph, i, EN_DEMAND, &mut demand);
                 let name = CStr::from_ptr(buf.as_ptr())
                     .to_string_lossy().replace('\'', "''");
-                // Convertir NaN/Inf a NULL para SQL
                 let hv = if head.is_finite() { format!("{head}") } else { "NULL".into() };
                 let pv = if pressure.is_finite() { format!("{pressure}") } else { "NULL".into() };
                 let dv = if demand.is_finite() { format!("{demand}") } else { "NULL".into() };
-                parts.push(format!("({run_id},0,'{name}',{hv},{pv},{dv})"));
+                // Sin paréntesis exteriores: run_id se antepone al construir el INSERT
+                node_parts.push(format!("{step},'{name}',{hv},{pv},{dv}"));
             }
         }
-        parts.join(",")
-    };
-    if !node_vals.is_empty() {
-        Spi::run(&format!(
-            "INSERT INTO epanet.node_results(run_id,step,node_id,head,pressure,demand) \
-             VALUES {node_vals}"
-        ))
-        .unwrap_or_else(|e| error!("SPI error al insertar node_results: {e:?}"));
-    }
 
-    // 8. Recopilar resultados de enlaces
-    let link_vals: String = {
-        let mut buf = vec![0i8; 64];
-        let mut parts = Vec::with_capacity(n_links as usize);
-        for i in 1..=n_links {
-            unsafe {
+        // Resultados de enlaces para este paso
+        unsafe {
+            let mut buf = vec![0i8; 64];
+            for i in 1..=n_links {
                 EN_getlinkid(ph, i, buf.as_mut_ptr());
                 let mut flow: f64 = 0.0;
                 let mut velocity: f64 = 0.0;
@@ -468,23 +468,57 @@ fn epanet_simulate(network_id: i32) -> i32 {
                 let fv = if flow.is_finite() { format!("{flow}") } else { "NULL".into() };
                 let vv = if velocity.is_finite() { format!("{velocity}") } else { "NULL".into() };
                 let lv = if headloss.is_finite() { format!("{headloss}") } else { "NULL".into() };
-                parts.push(format!("({run_id},0,'{name}',{fv},{vv},{lv})"));
+                link_parts.push(format!("{step},'{name}',{fv},{vv},{lv}"));
             }
         }
-        parts.join(",")
-    };
-    if !link_vals.is_empty() {
-        Spi::run(&format!(
-            "INSERT INTO epanet.link_results(run_id,step,link_id,flow,velocity,headloss) \
-             VALUES {link_vals}"
-        ))
-        .unwrap_or_else(|e| error!("SPI error al insertar link_results: {e:?}"));
+
+        n_steps += 1;
+
+        let mut t_step: i64 = 0;
+        unsafe { EN_nextH(ph, &mut t_step) };
+        if t_step <= 0 {
+            break;
+        }
     }
 
-    unsafe { EN_close(ph); EN_deleteproject(ph); }
+    unsafe { EN_closeH(ph); EN_close(ph); EN_deleteproject(ph); }
     let _ = std::fs::remove_file(&inp_path);
     let _ = std::fs::remove_file(&rpt_path);
     let _ = std::fs::remove_file(&out_path);
+
+    // 6. Registrar simulación con el número real de pasos
+    let run_id = Spi::get_one::<i32>(&format!(
+        "INSERT INTO epanet.simulation_runs(network_id, n_steps) \
+         VALUES ({network_id}, {n_steps}) RETURNING id"
+    ))
+    .unwrap_or_else(|e| error!("SPI error al insertar simulation_run: {e:?}"))
+    .unwrap();
+
+    // 7. Insertar resultados de nodos (bulk INSERT con run_id ya conocido)
+    if !node_parts.is_empty() {
+        let vals: String = node_parts.iter()
+            .map(|r| format!("({run_id},{r})"))
+            .collect::<Vec<_>>()
+            .join(",");
+        Spi::run(&format!(
+            "INSERT INTO epanet.node_results(run_id,step,node_id,head,pressure,demand) \
+             VALUES {vals}"
+        ))
+        .unwrap_or_else(|e| error!("SPI error al insertar node_results: {e:?}"));
+    }
+
+    // 8. Insertar resultados de enlaces
+    if !link_parts.is_empty() {
+        let vals: String = link_parts.iter()
+            .map(|r| format!("({run_id},{r})"))
+            .collect::<Vec<_>>()
+            .join(",");
+        Spi::run(&format!(
+            "INSERT INTO epanet.link_results(run_id,step,link_id,flow,velocity,headloss) \
+             VALUES {vals}"
+        ))
+        .unwrap_or_else(|e| error!("SPI error al insertar link_results: {e:?}"));
+    }
 
     run_id
 }
