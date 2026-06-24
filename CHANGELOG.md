@@ -1,20 +1,19 @@
 # Changelog
 
-All notable changes to `pg_epanet` are documented here.  
-Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
+All notable changes to this project will be documented in this file.
 
----
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
----
+### Added
+- Release tooling migrated to Rust (`xtask/`): Keep a Changelog parsing, GitHub Release notes, full release workflow.
 
 ## [0.1.0] — 2026-06-24
 
 ### Notes
 - First stable release; no functional changes since 0.1.0-rc.1.
-
----
 
 ## [0.1.0-rc.1] — 2026-06-24
 
@@ -48,8 +47,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - When loading large INP files via psql `\COPY`, always use `ORDER BY lineno` with a `SERIAL` column — `ORDER BY ctid` does not guarantee insertion order for large files.
 - First packaged release; future versions upgrade via `ALTER EXTENSION pg_epanet UPDATE`.
 
----
 
-## [0.0.0] — internal
 
-Pre-release development; no packaged SQL shipped.
+[unreleased]: https://github.com/danimarindev/pg_epanet/compare/v0.1.0...main
+[0.1.0]: https://github.com/danimarindev/pg_epanet/compare/v0.1.0-rc.1...v0.1.0
+[0.1.0-rc.1]: https://github.com/danimarindev/pg_epanet/compare/v0.0.0...v0.1.0-rc.1
