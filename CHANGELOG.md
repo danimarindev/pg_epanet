@@ -7,6 +7,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+---
+
+## [0.1.0] — 2026-06-24
+
 ### Notes
 - First stable release; no functional changes since 0.1.0-rc.1.
 
