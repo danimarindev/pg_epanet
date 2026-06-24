@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
-/// Parsea el contenido de un fichero INP y devuelve un mapa de sección → líneas de campos.
-/// Cada línea es un Vec<String> con los campos separados por whitespace, sin comentarios.
+/// Parses an INP file's text content and returns a map of section → field rows.
+/// Each row is a Vec<String> of whitespace-separated fields with comments stripped.
 pub fn parse_sections(input: &str) -> HashMap<String, Vec<Vec<String>>> {
     let mut sections: HashMap<String, Vec<Vec<String>>> = HashMap::new();
     let mut current = String::new();
@@ -55,7 +55,7 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_tanks_6_campos() {
+    fn test_parse_tanks_6_fields() {
         let inp = "[TANKS]\nT1  50.0  10.0  2.0  20.0  15.0\n";
         let sections = parse_sections(inp);
         let rows = sections.get("TANKS").unwrap();
@@ -64,7 +64,7 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_tanks_con_curva() {
+    fn test_parse_tanks_with_curve() {
         let inp = "[TANKS]\nT2  60.0  5.0  1.0  18.0  10.0  100.0  C1\n";
         let sections = parse_sections(inp);
         let rows = sections.get("TANKS").unwrap();
@@ -72,30 +72,30 @@ mod tests {
     }
 
     #[test]
-    fn test_strip_comentario_inline() {
-        let inp = "[TANKS]\nT1  50.0  10.0  2.0  20.0  15.0  ; comentario\n";
+    fn test_strip_inline_comment() {
+        let inp = "[TANKS]\nT1  50.0  10.0  2.0  20.0  15.0  ; inline comment\n";
         let sections = parse_sections(inp);
         let rows = sections.get("TANKS").unwrap();
         assert_eq!(rows[0].len(), 6);
     }
 
     #[test]
-    fn test_seccion_ausente() {
+    fn test_missing_section() {
         let inp = "[JUNCTIONS]\nJ1  100.0\n";
         let sections = parse_sections(inp);
         assert!(sections.get("TANKS").is_none());
     }
 
     #[test]
-    fn test_seccion_vacia() {
-        let inp = "[TANKS]\n; solo comentarios\n\n";
+    fn test_empty_section() {
+        let inp = "[TANKS]\n; only comments\n\n";
         let sections = parse_sections(inp);
         let rows = sections.get("TANKS").unwrap();
         assert_eq!(rows.len(), 0);
     }
 
     #[test]
-    fn test_cabecera_case_insensitive() {
+    fn test_header_case_insensitive() {
         let inp = "[tanks]\nT1  50.0  10.0  2.0  20.0  15.0\n";
         let sections = parse_sections(inp);
         assert!(sections.contains_key("TANKS"));

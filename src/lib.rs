@@ -10,7 +10,7 @@ fn hello_pg_epanet() -> &'static str {
     "Hello, pg_epanet"
 }
 
-/// Devuelve las filas de la sección [RESERVOIRS] del fichero INP.
+/// Returns rows from the [RESERVOIRS] section of an INP file.
 #[pg_extern]
 fn epanet_reservoirs(
     inp_text: &str,
@@ -30,9 +30,9 @@ fn epanet_reservoirs(
     }))
 }
 
-/// Devuelve las filas de la sección [TANKS] del fichero INP.
-/// min_volume toma valor 0.0 si no está presente en la línea.
-/// volume_curve es NULL si no hay curva o si el valor es '*'.
+/// Returns rows from the [TANKS] section of an INP file.
+/// min_volume defaults to 0.0 when absent.
+/// volume_curve is NULL when absent or when the value is '*'.
 #[pg_extern]
 fn epanet_tanks(
     inp_text: &str,
@@ -81,8 +81,8 @@ fn sql_text(s: &str) -> String {
     format!("'{}'", s.replace('\'', "''"))
 }
 
-/// Crea el schema `epanet` y todas sus tablas la primera vez; idempotente.
-/// Requiere PostGIS instalado — llamar solo tras verificar su presencia.
+/// Creates the `epanet` schema and all its tables on first call; idempotent.
+/// Requires PostGIS — call only after confirming it is installed.
 fn create_epanet_schema() {
     for sql in [
         "CREATE SCHEMA IF NOT EXISTS epanet",
@@ -171,7 +171,7 @@ fn create_epanet_schema() {
             y           FLOAT8 NOT NULL,
             PRIMARY KEY (network_id, node_id)
         )",
-        // idx preserva el orden de los vértices tal como aparecen en el INP
+        // idx preserves vertex order as they appear in the INP file
         "CREATE TABLE IF NOT EXISTS epanet.vertices (
             network_id  INT NOT NULL REFERENCES epanet.networks(id) ON DELETE CASCADE,
             link_id     TEXT NOT NULL,
@@ -180,7 +180,7 @@ fn create_epanet_schema() {
             y           FLOAT8 NOT NULL,
             PRIMARY KEY (network_id, link_id, idx)
         )",
-        // Vista unificada de todos los nodos (útil como capa GIS de puntos)
+        // Unified view of all node types — useful as a single GIS point layer
         "CREATE OR REPLACE VIEW epanet.nodes AS
             SELECT network_id, name AS node_id, 'junction'::text AS node_type, elevation, geom
               FROM epanet.junctions
@@ -188,7 +188,7 @@ fn create_epanet_schema() {
             SELECT network_id, name, 'tank',      elevation, geom FROM epanet.tanks
             UNION ALL
             SELECT network_id, name, 'reservoir', head,      geom FROM epanet.reservoirs",
-        // Tablas de resultados de simulación hidráulica
+        // Hydraulic simulation result tables
         "CREATE TABLE IF NOT EXISTS epanet.simulation_runs (
             id         SERIAL PRIMARY KEY,
             network_id INT NOT NULL REFERENCES epanet.networks(id) ON DELETE CASCADE,
@@ -220,10 +220,10 @@ fn create_epanet_schema() {
     }
 }
 
-/// Importa un fichero INP al catálogo interno `epanet` y genera geometría PostGIS.
-/// Si ya existe una red con el mismo `network_name`, los datos anteriores se borran.
-/// Requiere `CREATE EXTENSION postgis` en la base de datos.
-/// Devuelve el `network_id` asignado.
+/// Parses an EPANET INP file and materialises it into the `epanet` schema with PostGIS geometry.
+/// Each call creates a new network row; previous networks with the same name are not replaced.
+/// Requires `CREATE EXTENSION postgis` in the database.
+/// Returns the assigned `network_id`.
 #[pg_extern]
 fn epanet_import(
     network_name: &str,
@@ -236,7 +236,7 @@ fn epanet_import(
     .unwrap()
     .unwrap_or(false);
     if !has_postgis {
-        error!("PostGIS es requerido para epanet_import. Ejecuta: CREATE EXTENSION postgis;");
+        error!("PostGIS is required for epanet_import. Run: CREATE EXTENSION postgis;");
     }
 
     create_epanet_schema();
@@ -251,7 +251,7 @@ fn epanet_import(
 
     let nid = network_id;
 
-    // Insertar datos usando las funciones epanet_* ya existentes
+    // Populate tables via the existing epanet_* table-returning functions
     for (table, func, cols) in [
         ("junctions",   "epanet_junctions",   "name, elevation, demand, pattern"),
         ("reservoirs",  "epanet_reservoirs",  "name, head, pattern"),
@@ -267,7 +267,7 @@ fn epanet_import(
         .unwrap();
     }
 
-    // Vértices con índice de orden para garantizar el orden correcto del LineString
+    // Vertices with an ordering index to guarantee correct LineString point order
     let mut sections = inp::parse_sections(inp_text);
     let vertex_rows = sections.remove("VERTICES").unwrap_or_default();
     if !vertex_rows.is_empty() {
@@ -293,7 +293,7 @@ fn epanet_import(
         }
     }
 
-    // Geometría de puntos para nodos (junctions, tanks, reservoirs)
+    // Point geometry for nodes (junctions, tanks, reservoirs)
     for table in ["junctions", "tanks", "reservoirs"] {
         Spi::run(&format!(
             "UPDATE epanet.{table} t \
@@ -305,7 +305,7 @@ fn epanet_import(
         .unwrap();
     }
 
-    // Geometría de líneas para tuberías (node1 + vértices ordenados + node2)
+    // LineString geometry for pipes: node1 + ordered intermediate vertices + node2
     Spi::run(&format!(
         "UPDATE epanet.pipes p \
          SET geom = ST_SetSRID( \
@@ -324,7 +324,7 @@ fn epanet_import(
     ))
     .unwrap();
 
-    // Geometría de líneas para válvulas y bombas (segmento directo node1→node2)
+    // Direct node1→node2 LineString geometry for valves and pumps
     for table in ["valves", "pumps"] {
         Spi::run(&format!(
             "UPDATE epanet.{table} lnk \
@@ -342,26 +342,26 @@ fn epanet_import(
     network_id
 }
 
-/// Ejecuta la simulación hidráulica de una red importada y almacena los resultados.
-/// Usa la EPANET 2.3 C toolkit oficial (OWA-EPANET). Devuelve el run_id generado.
+/// Runs a full Extended Period Simulation (EPS) using the official OWA-EPANET 2.3 C toolkit.
+/// Results are stored in epanet.node_results and epanet.link_results. Returns the run_id.
 #[pg_extern]
 fn epanet_simulate(network_id: i32) -> i32 {
     use crate::ffi::*;
     use std::ffi::{CStr, CString};
 
-    // 1. Leer el INP almacenado
+    // 1. Fetch the stored INP text
     let inp_text = Spi::get_one::<String>(&format!(
         "SELECT inp_text FROM epanet.networks WHERE id = {network_id}"
     ))
     .unwrap()
-    .unwrap_or_else(|| error!("No existe ninguna red con id={network_id}"));
+    .unwrap_or_else(|| error!("No network found with id={network_id}"));
 
-    // 2. Escribir a fichero temporal
+    // 2. Write to temp files required by the EPANET C API
     let inp_path = format!("/tmp/pg_epanet_{network_id}.inp");
     let rpt_path = format!("/tmp/pg_epanet_{network_id}.rpt");
     let out_path = format!("/tmp/pg_epanet_{network_id}.out");
     std::fs::write(&inp_path, &inp_text)
-        .unwrap_or_else(|e| error!("No se pudo escribir fichero temporal: {e}"));
+        .unwrap_or_else(|e| error!("Cannot write temp file: {e}"));
 
     let c_inp = CString::new(inp_path.as_str()).unwrap();
     let c_rpt = CString::new(rpt_path.as_str()).unwrap();
@@ -376,8 +376,8 @@ fn epanet_simulate(network_id: i32) -> i32 {
             error!("EN_createproject failed (code {})", ec);
         }
         let ec = EN_open(ph, c_inp.as_ptr(), c_rpt.as_ptr(), c_out.as_ptr());
-        // EC=200 significa advertencias de formato pero el proyecto sigue abierto y usable.
-        // Cualquier otro código != 0 es un error fatal.
+        // EC=200 means formatting warnings — the project remains open and usable.
+        // Any other non-zero code is a fatal error.
         if ec != 0 && ec != 200 {
             EN_deleteproject(ph);
             let _ = std::fs::remove_file(&inp_path);
@@ -390,7 +390,7 @@ fn epanet_simulate(network_id: i32) -> i32 {
         ph
     };
 
-    // 4. Leer conteos (antes de abrir el solver)
+    // 4. Read element counts before opening the hydraulic solver
     let (n_nodes, n_links) = unsafe {
         let mut nn: i32 = 0;
         let mut nl: i32 = 0;
@@ -399,7 +399,7 @@ fn epanet_simulate(network_id: i32) -> i32 {
         (nn, nl)
     };
 
-    // 5. Abrir solver hidráulico EPS y lanzar el loop
+    // 5. Open the EPS hydraulic solver and run the time-step loop
     let open_ec = unsafe { EN_openH(ph) };
     if open_ec >= 100 {
         unsafe { EN_close(ph); EN_deleteproject(ph); }
@@ -410,7 +410,7 @@ fn epanet_simulate(network_id: i32) -> i32 {
     }
     unsafe { EN_initH(ph, EN_NOSAVE) };
 
-    // Acumular filas de resultados por paso
+    // Accumulate result rows per time step
     let mut node_parts: Vec<String> = Vec::new();
     let mut link_parts: Vec<String> = Vec::new();
     let mut n_steps: i32 = 0;
@@ -427,11 +427,12 @@ fn epanet_simulate(network_id: i32) -> i32 {
             let _ = std::fs::remove_file(&out_path);
             error!("EN_runH failed (code {}) at t={}s", ec, current_time);
         }
-        // TODO: emitir warning de PostgreSQL para ec 1-99 (evitar macro warning! por ahora)
+        // TODO: emit a PostgreSQL WARNING for ec 1-99 (pgrx warning! macro has a known message
+        //       rendering issue in this context; deferring until the root cause is understood)
 
         let step = n_steps;
 
-        // Resultados de nodos para este paso
+        // Collect node results for this time step
         unsafe {
             let mut buf = vec![0i8; 64];
             for i in 1..=n_nodes {
@@ -447,12 +448,12 @@ fn epanet_simulate(network_id: i32) -> i32 {
                 let hv = if head.is_finite() { format!("{head}") } else { "NULL".into() };
                 let pv = if pressure.is_finite() { format!("{pressure}") } else { "NULL".into() };
                 let dv = if demand.is_finite() { format!("{demand}") } else { "NULL".into() };
-                // Sin paréntesis exteriores: run_id se antepone al construir el INSERT
+                // No outer parens — run_id is prepended when building the INSERT VALUES list
                 node_parts.push(format!("{step},'{name}',{hv},{pv},{dv}"));
             }
         }
 
-        // Resultados de enlaces para este paso
+        // Collect link results for this time step
         unsafe {
             let mut buf = vec![0i8; 64];
             for i in 1..=n_links {
@@ -486,15 +487,15 @@ fn epanet_simulate(network_id: i32) -> i32 {
     let _ = std::fs::remove_file(&rpt_path);
     let _ = std::fs::remove_file(&out_path);
 
-    // 6. Registrar simulación con el número real de pasos
+    // 6. Record the simulation run with the actual step count
     let run_id = Spi::get_one::<i32>(&format!(
         "INSERT INTO epanet.simulation_runs(network_id, n_steps) \
          VALUES ({network_id}, {n_steps}) RETURNING id"
     ))
-    .unwrap_or_else(|e| error!("SPI error al insertar simulation_run: {e:?}"))
+    .unwrap_or_else(|e| error!("SPI error inserting simulation_run: {e:?}"))
     .unwrap();
 
-    // 7. Insertar resultados de nodos (bulk INSERT con run_id ya conocido)
+    // 7. Bulk-insert node results (run_id is now known)
     if !node_parts.is_empty() {
         let vals: String = node_parts.iter()
             .map(|r| format!("({run_id},{r})"))
@@ -504,10 +505,10 @@ fn epanet_simulate(network_id: i32) -> i32 {
             "INSERT INTO epanet.node_results(run_id,step,node_id,head,pressure,demand) \
              VALUES {vals}"
         ))
-        .unwrap_or_else(|e| error!("SPI error al insertar node_results: {e:?}"));
+        .unwrap_or_else(|e| error!("SPI error inserting node_results: {e:?}"));
     }
 
-    // 8. Insertar resultados de enlaces
+    // 8. Bulk-insert link results
     if !link_parts.is_empty() {
         let vals: String = link_parts.iter()
             .map(|r| format!("({run_id},{r})"))
@@ -517,14 +518,14 @@ fn epanet_simulate(network_id: i32) -> i32 {
             "INSERT INTO epanet.link_results(run_id,step,link_id,flow,velocity,headloss) \
              VALUES {vals}"
         ))
-        .unwrap_or_else(|e| error!("SPI error al insertar link_results: {e:?}"));
+        .unwrap_or_else(|e| error!("SPI error inserting link_results: {e:?}"));
     }
 
     run_id
 }
 
-/// Devuelve las filas de la sección [JUNCTIONS] del fichero INP.
-/// demand toma 0.0 si no está presente; pattern es NULL si no aparece.
+/// Returns rows from the [JUNCTIONS] section of an INP file.
+/// demand defaults to 0.0 when absent; pattern is NULL when absent.
 #[pg_extern]
 fn epanet_junctions(
     inp_text: &str,
@@ -553,9 +554,9 @@ fn epanet_junctions(
     }))
 }
 
-/// Devuelve las filas de la sección [PIPES] del fichero INP.
-/// minor_loss toma 0.0 si no está presente; status toma 'OPEN' si no está presente.
-/// 'CV' en status indica válvula de retención (check valve).
+/// Returns rows from the [PIPES] section of an INP file.
+/// minor_loss defaults to 0.0 when absent; status defaults to 'OPEN' when absent.
+/// 'CV' in status indicates a check valve.
 #[pg_extern]
 fn epanet_pipes(
     inp_text: &str,
@@ -592,7 +593,7 @@ fn epanet_pipes(
     }))
 }
 
-/// Devuelve las coordenadas X, Y de los nodos de la sección [COORDINATES].
+/// Returns X, Y coordinates for nodes from the [COORDINATES] section of an INP file.
 #[pg_extern]
 fn epanet_coordinates(
     inp_text: &str,
@@ -612,8 +613,8 @@ fn epanet_coordinates(
     }))
 }
 
-/// Devuelve los vértices intermedios de tuberías de la sección [VERTICES].
-/// Puede haber múltiples filas por tubería.
+/// Returns intermediate pipe bend vertices from the [VERTICES] section of an INP file.
+/// Multiple rows per pipe are allowed.
 #[pg_extern]
 fn epanet_vertices(
     inp_text: &str,
@@ -633,9 +634,9 @@ fn epanet_vertices(
     }))
 }
 
-/// Devuelve las filas de la sección [PUMPS] del fichero INP.
-/// Los campos del [3] en adelante son pares keyword-valor en cualquier orden.
-/// pump_type es 'HEAD' o 'POWER'; speed es NULL si no aparece (EPANET asume 1.0).
+/// Returns rows from the [PUMPS] section of an INP file.
+/// Fields from index 3 onward are keyword-value pairs in any order.
+/// pump_type is 'HEAD' or 'POWER'; speed is NULL when absent (EPANET defaults to 1.0).
 #[pg_extern]
 fn epanet_pumps(
     inp_text: &str,
@@ -696,9 +697,9 @@ fn epanet_pumps(
     }))
 }
 
-/// Devuelve las filas de la sección [VALVES] del fichero INP.
-/// setting es TEXT porque GPV almacena el nombre de una curva en ese campo.
-/// minor_loss toma valor 0.0 si no está presente.
+/// Returns rows from the [VALVES] section of an INP file.
+/// setting is TEXT because GPV valves store a curve name there instead of a numeric value.
+/// minor_loss defaults to 0.0 when absent.
 #[pg_extern]
 fn epanet_valves(
     inp_text: &str,
@@ -743,7 +744,7 @@ mod tests {
         assert_eq!("Hello, pg_epanet", crate::hello_pg_epanet());
     }
 
-    fn postgis_disponible() -> bool {
+    fn postgis_available() -> bool {
         Spi::get_one::<bool>(
             "SELECT EXISTS(SELECT 1 FROM pg_extension WHERE extname = 'postgis')",
         )
@@ -752,8 +753,8 @@ mod tests {
     }
 
     #[pg_test]
-    fn test_epanet_import_retorna_network_id_y_crea_tablas() {
-        if !postgis_disponible() { return; }
+    fn test_epanet_import_returns_network_id_and_creates_tables() {
+        if !postgis_available() { return; }
 
         let inp = "$inp$
 [JUNCTIONS]
@@ -778,7 +779,7 @@ $inp$";
         .unwrap();
         assert!(nid > 0);
 
-        // Las tablas del catálogo deben tener los datos
+        // Catalogue tables must contain the imported data
         let n_j = Spi::get_one::<i64>(
             &format!("SELECT count(*)::bigint FROM epanet.junctions WHERE network_id = {nid}"),
         ).unwrap().unwrap();
@@ -789,21 +790,21 @@ $inp$";
         ).unwrap().unwrap();
         assert_eq!(n_p, 1);
 
-        // Los nodos deben tener geometría generada
+        // Nodes must have geometry generated
         let geom_notnull = Spi::get_one::<i64>(&format!(
             "SELECT count(*)::bigint FROM epanet.junctions \
              WHERE network_id = {nid} AND geom IS NOT NULL"
         )).unwrap().unwrap();
         assert_eq!(geom_notnull, 2);
 
-        // La tubería debe tener geometría LineString
+        // The pipe must have a LineString geometry
         let pipe_geom = Spi::get_one::<i64>(&format!(
             "SELECT count(*)::bigint FROM epanet.pipes \
              WHERE network_id = {nid} AND geom IS NOT NULL"
         )).unwrap().unwrap();
         assert_eq!(pipe_geom, 1);
 
-        // El INP original debe estar almacenado
+        // The original INP text must be stored
         let stored_len = Spi::get_one::<i32>(&format!(
             "SELECT length(inp_text) FROM epanet.networks WHERE id = {nid}"
         )).unwrap().unwrap();
@@ -811,8 +812,8 @@ $inp$";
     }
 
     #[pg_test]
-    fn test_epanet_import_acumula_versiones() {
-        if !postgis_disponible() { return; }
+    fn test_epanet_import_accumulates_versions() {
+        if !postgis_available() { return; }
 
         let inp = "'[JUNCTIONS]\nJ1  50.0\n[COORDINATES]\nJ1  10.0  20.0\n'";
         let nid1 = Spi::get_one::<i32>(
@@ -822,9 +823,9 @@ $inp$";
             &format!("SELECT epanet_import('test_acum', {inp})"),
         ).unwrap().unwrap();
 
-        // Cada llamada crea un network_id diferente
+        // Each call must produce a distinct network_id
         assert_ne!(nid1, nid2);
-        // Ambas versiones coexisten
+        // Both versions must coexist
         let n = Spi::get_one::<i64>(
             "SELECT count(*)::bigint FROM epanet.networks WHERE name = 'test_acum'",
         ).unwrap().unwrap();
@@ -832,7 +833,7 @@ $inp$";
     }
 
     #[pg_test]
-    fn test_epanet_junctions_demand_default() {
+    fn test_epanet_junctions_demand_defaults_to_zero() {
         let (demand, pattern) = Spi::get_two::<f64, String>(
             "SELECT demand, pattern FROM epanet_junctions($inp$
 [JUNCTIONS]
@@ -845,7 +846,7 @@ $inp$)",
     }
 
     #[pg_test]
-    fn test_epanet_junctions_con_demand_y_patron() {
+    fn test_epanet_junctions_with_demand_and_pattern() {
         let (demand, pattern) = Spi::get_two::<f64, String>(
             "SELECT demand, pattern FROM epanet_junctions($inp$
 [JUNCTIONS]
@@ -858,7 +859,7 @@ $inp$) WHERE name = 'J1'",
     }
 
     #[pg_test]
-    fn test_epanet_pipes_campos_minimos() {
+    fn test_epanet_pipes_minimum_fields() {
         let (minor_loss, status) = Spi::get_two::<f64, String>(
             "SELECT minor_loss, status FROM epanet_pipes($inp$
 [PIPES]
@@ -871,7 +872,7 @@ $inp$)",
     }
 
     #[pg_test]
-    fn test_epanet_pipes_con_todos_los_campos() {
+    fn test_epanet_pipes_all_fields() {
         let inp = "$inp$
 [PIPES]
 P1  J1  J2  500.0  300.0  0.05  1.5  CLOSED
@@ -905,7 +906,7 @@ $inp$)",
     }
 
     #[pg_test]
-    fn test_epanet_pipes_status_mayusculas() {
+    fn test_epanet_pipes_status_uppercased() {
         let status = Spi::get_one::<String>(
             "SELECT status FROM epanet_pipes($inp$
 [PIPES]
@@ -931,7 +932,7 @@ $inp$) WHERE node_id = 'J1'",
     }
 
     #[pg_test]
-    fn test_epanet_vertices_multiples_por_tuberia() {
+    fn test_epanet_vertices_multiple_per_pipe() {
         let n = Spi::get_one::<i64>(
             "SELECT count(*)::bigint FROM epanet_vertices($inp$
 [VERTICES]
@@ -946,7 +947,7 @@ $inp$) WHERE link_id = 'P1'",
     }
 
     #[pg_test]
-    fn test_epanet_reservoirs_count() {
+    fn test_epanet_reservoirs_row_count() {
         let n = Spi::get_one::<i64>(
             "SELECT count(*)::bigint FROM epanet_reservoirs($inp$
 [RESERVOIRS]
@@ -961,7 +962,7 @@ $inp$)",
     }
 
     #[pg_test]
-    fn test_epanet_reservoirs_valores() {
+    fn test_epanet_reservoirs_values() {
         let head = Spi::get_one::<f64>(
             "SELECT head FROM epanet_reservoirs($inp$
 [RESERVOIRS]
@@ -974,7 +975,7 @@ $inp$) WHERE name = 'R1'",
     }
 
     #[pg_test]
-    fn test_epanet_reservoirs_patron_nulo() {
+    fn test_epanet_reservoirs_pattern_null_when_absent() {
         let pattern = Spi::get_one::<String>(
             "SELECT pattern FROM epanet_reservoirs($inp$
 [RESERVOIRS]
@@ -982,12 +983,12 @@ R1  100.0
 $inp$)",
         )
         .unwrap();
-        // pattern debe ser NULL cuando no hay patrón
+        // pattern must be NULL when absent
         assert!(pattern.is_none());
     }
 
     #[pg_test]
-    fn test_epanet_tanks_count() {
+    fn test_epanet_tanks_row_count() {
         let n = Spi::get_one::<i64>(
             "SELECT count(*)::bigint FROM epanet_tanks($inp$
 [TANKS]
@@ -1002,7 +1003,7 @@ $inp$)",
     }
 
     #[pg_test]
-    fn test_epanet_tanks_min_volume_default() {
+    fn test_epanet_tanks_min_volume_defaults_to_zero() {
         let min_vol = Spi::get_one::<f64>(
             "SELECT min_volume FROM epanet_tanks($inp$
 [TANKS]
@@ -1015,7 +1016,7 @@ $inp$)",
     }
 
     #[pg_test]
-    fn test_epanet_tanks_volume_curve() {
+    fn test_epanet_tanks_volume_curve_name() {
         let curve = Spi::get_one::<String>(
             "SELECT volume_curve FROM epanet_tanks($inp$
 [TANKS]
@@ -1028,7 +1029,7 @@ $inp$) WHERE name = 'T1'",
     }
 
     #[pg_test]
-    fn test_epanet_tanks_asterisco_es_null() {
+    fn test_epanet_tanks_asterisk_is_null() {
         let curve = Spi::get_one::<String>(
             "SELECT volume_curve FROM epanet_tanks($inp$
 [TANKS]
@@ -1040,7 +1041,7 @@ $inp$)",
     }
 
     #[pg_test]
-    fn test_epanet_seccion_ausente_devuelve_vacio() {
+    fn test_epanet_missing_section_returns_empty() {
         let n = Spi::get_one::<i64>(
             "SELECT count(*)::bigint FROM epanet_tanks('[JUNCTIONS]
 J1  10.0
@@ -1066,7 +1067,7 @@ $inp$) WHERE name = 'P1'",
     }
 
     #[pg_test]
-    fn test_epanet_pumps_power_con_speed_y_pattern() {
+    fn test_epanet_pumps_power_with_speed_and_pattern() {
         let inp = "$inp$
 [PUMPS]
 P2  J3  J4  POWER  10.5  SPEED  1.5  PATTERN  pat1
@@ -1087,7 +1088,7 @@ $inp$";
     }
 
     #[pg_test]
-    fn test_epanet_pumps_speed_nula_si_ausente() {
+    fn test_epanet_pumps_speed_null_when_absent() {
         let speed = Spi::get_one::<f64>(
             "SELECT speed FROM epanet_pumps($inp$
 [PUMPS]
@@ -1113,7 +1114,7 @@ $inp$) WHERE name = 'V1'",
     }
 
     #[pg_test]
-    fn test_epanet_valves_gpv_setting_es_nombre_curva() {
+    fn test_epanet_valves_gpv_setting_is_curve_name() {
         let setting = Spi::get_one::<String>(
             "SELECT setting FROM epanet_valves($inp$
 [VALVES]
@@ -1126,7 +1127,7 @@ $inp$) WHERE name = 'V2'",
     }
 
     #[pg_test]
-    fn test_epanet_valves_minor_loss_default() {
+    fn test_epanet_valves_minor_loss_defaults_to_zero() {
         let minor_loss = Spi::get_one::<f64>(
             "SELECT minor_loss FROM epanet_valves($inp$
 [VALVES]
@@ -1139,7 +1140,7 @@ $inp$)",
     }
 
     #[pg_test]
-    fn test_epanet_valves_tipo_en_mayusculas() {
+    fn test_epanet_valves_type_uppercased() {
         let valve_type = Spi::get_one::<String>(
             "SELECT valve_type FROM epanet_valves($inp$
 [VALVES]
