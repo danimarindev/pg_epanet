@@ -1,7 +1,9 @@
 use pgrx::prelude::*;
 
+mod epanet_sections;
 mod ffi;
 mod inp;
+mod metadata;
 mod schema;
 
 ::pgrx::pg_module_magic!(name, version);
@@ -78,7 +80,7 @@ fn epanet_tanks(
     }))
 }
 
-fn sql_text(s: &str) -> String {
+pub(crate) fn sql_text(s: &str) -> String {
     format!("'{}'", s.replace('\'', "''"))
 }
 
@@ -190,6 +192,8 @@ fn epanet_import(
         .unwrap();
     }
 
+    metadata::import_metadata_sections(network_id, inp_text);
+
     network_id
 }
 
@@ -210,6 +214,16 @@ fn epanet_delete(network_id: i32) -> bool {
 fn epanet_simulate(network_id: i32) -> i32 {
     use crate::ffi::*;
     use std::ffi::{CStr, CString, c_char};
+
+    fn epanet_error_message(ec: i32) -> String {
+        unsafe {
+            let mut buf = vec![0 as c_char; 256];
+            EN_geterror(ec, buf.as_mut_ptr(), 255);
+            CStr::from_ptr(buf.as_ptr())
+                .to_string_lossy()
+                .into_owned()
+        }
+    }
 
     // 1. Fetch the stored INP text
     let inp_text = Spi::get_one::<String>(&format!(
@@ -289,8 +303,15 @@ fn epanet_simulate(network_id: i32) -> i32 {
             let _ = std::fs::remove_file(&out_path);
             error!("EN_runH failed (code {}) at t={}s", ec, current_time);
         }
-        // TODO: emit a PostgreSQL WARNING for ec 1-99 (pgrx warning! macro has a known message
-        //       rendering issue in this context; deferring until the root cause is understood)
+        if (1..100).contains(&ec) {
+            let msg = epanet_error_message(ec);
+            warning!(
+                "epanet: solver warning {} at t={}s: {}",
+                ec,
+                current_time,
+                msg
+            );
+        }
 
         let step = n_steps;
 
@@ -1040,6 +1061,123 @@ $inp$)",
         .unwrap()
         .unwrap();
         assert_eq!(valve_type, "FCV");
+    }
+
+    const META_INP: &str = "$inp$
+[PATTERNS]
+PD1 1.0 1.2 1.4
+[CURVES]
+C1 0.0 10.0
+C1 1.0 8.0
+[OPTIONS]
+Units LPS
+Demand Multiplier 1.5
+[TIMES]
+Duration 24:00
+[CONTROLS]
+LINK P1 CLOSED IF NODE J1 ABOVE 100
+[RULES]
+RULE R1
+IF TANK T1 LEVEL > 8
+THEN PUMP PU1 STATUS = CLOSED
+PRIORITY 1
+[DEMANDS]
+J1 5.0 PD1
+[EMITTERS]
+J2 0.25
+[STATUS]
+P1 Open
+[SOURCES]
+J1 CONCEN 0.5 PD1
+[REACTIONS]
+Order Bulk 1
+[QUALITY]
+Tolerance 0.01
+[ENERGY]
+Global Efficiency 75
+[REPORT]
+Status No
+$inp$";
+
+    #[pg_test]
+    fn test_epanet_patterns_table_fn() {
+        let n = Spi::get_one::<i64>(&format!(
+            "SELECT count(*)::bigint FROM epanet_patterns({META_INP})"
+        ))
+        .unwrap()
+        .unwrap();
+        assert_eq!(n, 3);
+    }
+
+    #[pg_test]
+    fn test_epanet_curves_table_fn() {
+        let n = Spi::get_one::<i64>(&format!(
+            "SELECT count(*)::bigint FROM epanet_curves({META_INP})"
+        ))
+        .unwrap()
+        .unwrap();
+        assert_eq!(n, 2);
+    }
+
+    #[pg_test]
+    fn test_epanet_options_two_word_key() {
+        let val = Spi::get_one::<String>(&format!(
+            "SELECT value FROM epanet_options({META_INP}) WHERE key = 'Demand Multiplier'"
+        ))
+        .unwrap()
+        .unwrap();
+        assert_eq!(val, "1.5");
+    }
+
+    #[pg_test]
+    fn test_epanet_rules_table_fn() {
+        let n = Spi::get_one::<i64>(&format!(
+            "SELECT count(*)::bigint FROM epanet_rules({META_INP})"
+        ))
+        .unwrap()
+        .unwrap();
+        assert_eq!(n, 1);
+    }
+
+    #[pg_test]
+    fn test_epanet_import_metadata_sections() {
+        let inp = r#"[JUNCTIONS]
+J1 50.0
+[COORDINATES]
+J1 1.0 2.0
+[PATTERNS]
+PD1 1.0 1.2
+[CURVES]
+C1 0.0 10.0
+[OPTIONS]
+Units LPS
+[RULES]
+RULE R1
+IF TANK T1 LEVEL > 8
+THEN PUMP PU1 STATUS = CLOSED
+PRIORITY 1
+"#;
+        let nid = Spi::get_one::<i32>(&format!(
+            "SELECT epanet_import('meta_test', $${inp}$$, 4326)"
+        ))
+        .unwrap()
+        .unwrap();
+
+        let patterns = Spi::get_one::<i64>(&format!(
+            "SELECT count(*)::bigint FROM epanet.patterns WHERE network_id = {nid}"
+        ))
+        .unwrap()
+        .unwrap();
+        assert_eq!(patterns, 2);
+
+        let rules = Spi::get_one::<i64>(&format!(
+            "SELECT count(*)::bigint FROM epanet.rules WHERE network_id = {nid}"
+        ))
+        .unwrap()
+        .unwrap();
+        assert_eq!(rules, 1);
+
+        let _ = Spi::get_one::<bool>(&format!("SELECT epanet_delete({nid})")).unwrap();
     }
 }
 

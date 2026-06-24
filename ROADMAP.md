@@ -23,26 +23,28 @@ High-level plan for `pg_epanet`. Items within each milestone are roughly ordered
 - [x] Release tooling (`xtask/`) — Keep a Changelog, GitHub Releases
 - [x] 35 tests (`cargo pgrx test pg18`) — 28 `#[pg_test]` + 7 pure-Rust parser unit tests
 
-**Known gaps in v0.1.0:**
-
-- Solver warning codes 1–99 are tolerated but not surfaced to the client (TODO in `epanet_simulate`)
-- Simulation writes temporary `.inp/.rpt/.out` files under `/tmp` on the Postgres server
-- INP metadata sections not yet imported: patterns, curves, options, controls, rules, sources, etc.
-
 ---
 
-## v0.2 — INP completeness & simulation polish
+## v0.2.0 — INP completeness & simulation polish ✅
 
-**Goal:** import the remaining EPANET INP sections needed for faithful simulation, and improve observability.
+**Released 2026-06-24.** All EPANET metadata sections queryable in SQL; solver warnings surfaced to clients.
 
-- [ ] **Simulation warnings** — emit EPANET warning codes 1–99 (pump out of range, unbalanced network, etc.) as PostgreSQL `WARNING` messages during `epanet_simulate`
-- [ ] `[PATTERNS]` — demand/time multiplier curves referenced by junctions and pumps
-- [ ] `[CURVES]` — head/volume/pump curves referenced by tanks and pumps
-- [ ] `[OPTIONS]` — simulation options (units, headloss formula, demand multiplier, report timestep, etc.)
-- [ ] `[TIMES]` — simulation duration and report timestep settings
-- [ ] `[CONTROLS]` / `[RULES]` — simple and rule-based controls
-- [ ] `[SOURCES]` / `[REACTIONS]` / `[QUALITY]` — needed as prerequisites for water quality (v0.3)
-- [ ] `[EMITTERS]`, `[DEMANDS]`, `[STATUS]`, `[ENERGY]`, `[REPORT]` — as needed for full EPANET parity
+- [x] **Simulation warnings** — EPANET codes 1–99 emitted as PostgreSQL `WARNING` during `epanet_simulate`
+- [x] `[PATTERNS]` — demand/time multiplier curves (`patterns` table, indexed by `idx`)
+- [x] `[CURVES]` — head/volume/pump curves (`curves` table, indexed by `idx`)
+- [x] `[OPTIONS]` — simulation options (key-value `options` table)
+- [x] `[TIMES]` — duration and timestep settings (`times` table)
+- [x] `[CONTROLS]` / `[RULES]` — stored as full rule text in `controls` and `rules` tables
+- [x] `[SOURCES]` / `[REACTIONS]` / `[QUALITY]` — prerequisites for water quality (v0.3)
+- [x] `[EMITTERS]`, `[DEMANDS]`, `[STATUS]`, `[ENERGY]`, `[REPORT]` — imported with table-returning functions
+- [x] `src/epanet_sections.rs` — multi-line parsers (patterns, curves, rules blocks)
+- [x] 44 tests total (`cargo pgrx test pg18`)
+
+**Known gaps after v0.2.0:**
+
+- Simulation writes temporary `.inp/.rpt/.out` files under `/tmp` on the Postgres server
+- `epanet_simulate` reads `inp_text` verbatim — metadata tables not yet used to reconstruct INP
+- Structured parse of CONTROLS/RULES into columns — backlog for `epanet_export` (v0.4)
 
 ---
 

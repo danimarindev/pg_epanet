@@ -151,6 +151,110 @@ CREATE INDEX tanks_geom      ON epanet.tanks      USING GIST (geom);
 CREATE INDEX pipes_geom      ON epanet.pipes      USING GIST (geom);
 CREATE INDEX pumps_geom      ON epanet.pumps      USING GIST (geom);
 CREATE INDEX valves_geom     ON epanet.valves     USING GIST (geom);
+
+CREATE TABLE epanet.patterns (
+    network_id  INT NOT NULL REFERENCES epanet.networks(id) ON DELETE CASCADE,
+    pattern_id  TEXT NOT NULL,
+    idx         INT NOT NULL,
+    multiplier  FLOAT8 NOT NULL,
+    PRIMARY KEY (network_id, pattern_id, idx)
+);
+
+CREATE TABLE epanet.curves (
+    network_id  INT NOT NULL REFERENCES epanet.networks(id) ON DELETE CASCADE,
+    curve_id    TEXT NOT NULL,
+    idx         INT NOT NULL,
+    x           FLOAT8 NOT NULL,
+    y           FLOAT8 NOT NULL,
+    PRIMARY KEY (network_id, curve_id, idx)
+);
+
+CREATE TABLE epanet.options (
+    network_id  INT NOT NULL REFERENCES epanet.networks(id) ON DELETE CASCADE,
+    key         TEXT NOT NULL,
+    value       TEXT NOT NULL,
+    PRIMARY KEY (network_id, key)
+);
+
+CREATE TABLE epanet.times (
+    network_id  INT NOT NULL REFERENCES epanet.networks(id) ON DELETE CASCADE,
+    key         TEXT NOT NULL,
+    value       TEXT NOT NULL,
+    PRIMARY KEY (network_id, key)
+);
+
+CREATE TABLE epanet.controls (
+    network_id  INT NOT NULL REFERENCES epanet.networks(id) ON DELETE CASCADE,
+    idx         INT NOT NULL,
+    rule_text   TEXT NOT NULL,
+    PRIMARY KEY (network_id, idx)
+);
+
+CREATE TABLE epanet.rules (
+    network_id  INT NOT NULL REFERENCES epanet.networks(id) ON DELETE CASCADE,
+    rule_id     TEXT NOT NULL,
+    rule_text   TEXT NOT NULL,
+    PRIMARY KEY (network_id, rule_id)
+);
+
+CREATE TABLE epanet.demands (
+    network_id  INT NOT NULL REFERENCES epanet.networks(id) ON DELETE CASCADE,
+    junction_id TEXT NOT NULL,
+    demand      FLOAT8 NOT NULL,
+    pattern     TEXT,
+    PRIMARY KEY (network_id, junction_id)
+);
+
+CREATE TABLE epanet.emitters (
+    network_id  INT NOT NULL REFERENCES epanet.networks(id) ON DELETE CASCADE,
+    junction_id TEXT NOT NULL,
+    coefficient FLOAT8 NOT NULL,
+    PRIMARY KEY (network_id, junction_id)
+);
+
+CREATE TABLE epanet.status (
+    network_id  INT NOT NULL REFERENCES epanet.networks(id) ON DELETE CASCADE,
+    link_id     TEXT NOT NULL,
+    status_value TEXT NOT NULL,
+    PRIMARY KEY (network_id, link_id)
+);
+
+CREATE TABLE epanet.sources (
+    network_id   INT NOT NULL REFERENCES epanet.networks(id) ON DELETE CASCADE,
+    node_id      TEXT NOT NULL,
+    source_type  TEXT NOT NULL,
+    quality      FLOAT8 NOT NULL,
+    pattern      TEXT,
+    PRIMARY KEY (network_id, node_id)
+);
+
+CREATE TABLE epanet.reactions (
+    network_id  INT NOT NULL REFERENCES epanet.networks(id) ON DELETE CASCADE,
+    key         TEXT NOT NULL,
+    value       TEXT NOT NULL,
+    PRIMARY KEY (network_id, key)
+);
+
+CREATE TABLE epanet.quality (
+    network_id  INT NOT NULL REFERENCES epanet.networks(id) ON DELETE CASCADE,
+    key         TEXT NOT NULL,
+    value       TEXT NOT NULL,
+    PRIMARY KEY (network_id, key)
+);
+
+CREATE TABLE epanet.energy (
+    network_id  INT NOT NULL REFERENCES epanet.networks(id) ON DELETE CASCADE,
+    key         TEXT NOT NULL,
+    value       TEXT NOT NULL,
+    PRIMARY KEY (network_id, key)
+);
+
+CREATE TABLE epanet.report (
+    network_id  INT NOT NULL REFERENCES epanet.networks(id) ON DELETE CASCADE,
+    key         TEXT NOT NULL,
+    value       TEXT NOT NULL,
+    PRIMARY KEY (network_id, key)
+);
 "#,
     name = "epanet_schema",
     bootstrap,

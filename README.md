@@ -2,7 +2,7 @@
 
 PostgreSQL extension (written in Rust via [pgrx](https://github.com/pgcentralfoundation/pgrx)) that parses EPANET `.inp` water network files and materialises them as queryable SQL tables with PostGIS geometry.
 
-> **Status:** [v0.1.0](https://github.com/danimarindev/pg_epanet/releases/tag/v0.1.0) released — see [CHANGELOG.md](CHANGELOG.md) for details.
+> **Status:** [v0.2.0](https://github.com/danimarindev/pg_epanet/releases/tag/v0.2.0) released — see [CHANGELOG.md](CHANGELOG.md) for details.
 
 ## Why pg_epanet?
 
@@ -20,11 +20,13 @@ For users who already store infrastructure data in PostGIS this eliminates the i
 - **Delete** networks and all associated data with `epanet_delete`
 - Works on **managed PostgreSQL** (RDS, Supabase, etc.) — the INP is passed as `text`, no server filesystem read required for import
 
-### INP sections supported (v0.1.0)
+### INP sections supported (v0.2.0)
 
-Import and table-returning functions exist for: `[JUNCTIONS]`, `[RESERVOIRS]`, `[TANKS]`, `[PIPES]`, `[PUMPS]`, `[VALVES]`, `[COORDINATES]`, `[VERTICES]`.
+**Topology & geometry:** `[JUNCTIONS]`, `[RESERVOIRS]`, `[TANKS]`, `[PIPES]`, `[PUMPS]`, `[VALVES]`, `[COORDINATES]`, `[VERTICES]`.
 
-Not yet imported: patterns, curves, options, times, controls, rules, sources, reactions, quality, and other metadata sections — see [ROADMAP.md](ROADMAP.md).
+**Metadata:** `[PATTERNS]`, `[CURVES]`, `[OPTIONS]`, `[TIMES]`, `[CONTROLS]`, `[RULES]`, `[DEMANDS]`, `[EMITTERS]`, `[STATUS]`, `[SOURCES]`, `[REACTIONS]`, `[QUALITY]`, `[ENERGY]`, `[REPORT]`.
+
+`epanet_simulate` still reads `networks.inp_text` verbatim — metadata tables are for SQL queryability and future export, not yet used to reconstruct INP for simulation.
 
 ## Requirements
 
@@ -47,7 +49,7 @@ The image uses `postgres:18-trixie` with PostGIS 3 from PGDG (native arm64; the 
 Check out a tagged version and build against your PostgreSQL installation:
 
 ```bash
-git checkout v0.1.0
+git checkout v0.2.0
 cargo install cargo-pgrx --version '=0.19.1'
 cargo pgrx init
 cargo pgrx install --release --features pg18 --no-default-features --pg-config $(which pg_config)
@@ -119,7 +121,7 @@ Parses the INP and writes all supported sections to permanent tables under the `
 epanet_simulate(network_id int) → int
 ```
 
-Runs a full Extended Period Simulation (EPS) using OWA-EPANET 2.3. Stores per-timestep results in `epanet.node_results` (head, pressure, demand) and `epanet.link_results` (flow, velocity, headloss). Returns the `run_id`. Fatal solver errors (code ≥ 100) abort the simulation; warning codes 1–99 are tolerated but not yet surfaced as PostgreSQL warnings.
+Runs a full Extended Period Simulation (EPS) using OWA-EPANET 2.3. Stores per-timestep results in `epanet.node_results` (head, pressure, demand) and `epanet.link_results` (flow, velocity, headloss). Returns the `run_id`. Fatal solver errors (code ≥ 100) abort the simulation; warning codes 1–99 are emitted as PostgreSQL `WARNING` messages (with timestep and EPANET error text).
 
 ### Delete
 
@@ -142,7 +144,21 @@ These functions parse the INP text in-query and return rows — useful for ad-ho
 | `epanet_pumps(inp_text)` | name, node1, node2, pump_type, head_curve, power, speed, pattern |
 | `epanet_valves(inp_text)` | name, node1, node2, diameter, valve_type, setting, minor_loss |
 | `epanet_coordinates(inp_text)` | node_id, x, y |
-| `epanet_vertices(inp_text)` | link_id, x, y |
+| `epanet_vertices(inp_text)` | link_id, idx, x, y |
+| `epanet_patterns(inp_text)` | pattern_id, idx, multiplier |
+| `epanet_curves(inp_text)` | curve_id, idx, x, y |
+| `epanet_options(inp_text)` | key, value |
+| `epanet_times(inp_text)` | key, value |
+| `epanet_controls(inp_text)` | idx, rule_text |
+| `epanet_rules(inp_text)` | rule_id, rule_text |
+| `epanet_demands(inp_text)` | junction_id, demand, pattern |
+| `epanet_emitters(inp_text)` | junction_id, coefficient |
+| `epanet_status(inp_text)` | link_id, status_value |
+| `epanet_sources(inp_text)` | node_id, source_type, quality, pattern |
+| `epanet_reactions(inp_text)` | key, value |
+| `epanet_quality(inp_text)` | key, value |
+| `epanet_energy(inp_text)` | key, value |
+| `epanet_report(inp_text)` | key, value |
 
 ## Schema
 
@@ -156,6 +172,12 @@ Created at `CREATE EXTENSION pg_epanet`:
 - `pipes`, `pumps`, `valves` — links with `geom geometry(LineString)` and GiST index
 - `coordinates`, `vertices` — raw geometry data (vertices ordered by `idx`)
 - `nodes` — unified view of all node types
+
+**Metadata**
+- `patterns`, `curves` — time multipliers and curve points (indexed by `idx` per id)
+- `options`, `times`, `reactions`, `quality`, `energy`, `report` — key-value settings
+- `controls`, `rules` — control logic stored as full rule text
+- `demands`, `emitters`, `status`, `sources` — per-element overrides
 
 **Simulation results**
 - `simulation_runs` — one row per simulation run (`n_steps` = timesteps solved)

@@ -45,6 +45,26 @@ pg_epanet simple test network
  HC1     20.0     25.0
  HC1     30.0     10.0
 
+[DEMANDS]
+;Junction  Demand  Pattern
+ J3        2.0     PD1
+
+[EMITTERS]
+;Junction  Coefficient
+ J2        0.5
+
+[STATUS]
+;Link  Setting
+ P4    Open
+
+[SOURCES]
+;Node  Type   Quality  Pattern
+ J1    CONCEN 0.5      PD1
+
+[REACTIONS]
+ Order Bulk    1
+ Global Bulk   0.0
+
 [COORDINATES]
 ;Node    X           Y
  J1      100.0       200.0
@@ -57,6 +77,16 @@ pg_epanet simple test network
 ;Link    X           Y
  P4      150.0       250.0
  P4      250.0       250.0
+
+[CONTROLS]
+;Simple control
+ LINK P4 CLOSED IF NODE J1 ABOVE 120
+
+[RULES]
+RULE 1
+IF TANK T1 LEVEL > 8
+THEN PUMP PU1 STATUS = CLOSED
+PRIORITY 1
 
 [OPTIONS]
  Units            LPS
@@ -91,5 +121,9 @@ pg_epanet simple test network
  Status   No
  Summary  No
  Page     0
+
+[ENERGY]
+ Global Efficiency 75
+ Global Price      0.12
 
 [END]

@@ -7,7 +7,7 @@ pub fn parse_sections(input: &str) -> HashMap<String, Vec<Vec<String>>> {
     let mut current = String::new();
 
     for line in input.lines() {
-        let line = strip_comment(line).trim();
+        let line = strip_comment_line(line).trim();
         if line.is_empty() {
             continue;
         }
@@ -24,6 +24,10 @@ pub fn parse_sections(input: &str) -> HashMap<String, Vec<Vec<String>>> {
     sections
 }
 
+pub fn strip_comment_line(line: &str) -> &str {
+    strip_comment(line)
+}
+
 fn strip_comment(line: &str) -> &str {
     match line.find(';') {
         Some(pos) => &line[..pos],
@@ -31,7 +35,7 @@ fn strip_comment(line: &str) -> &str {
     }
 }
 
-fn section_header(line: &str) -> Option<String> {
+pub fn section_header(line: &str) -> Option<String> {
     if line.starts_with('[') {
         let end = line.find(']')?;
         Some(line[1..end].to_uppercase())

@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Import and table-returning functions for all remaining EPANET metadata sections: `[PATTERNS]`, `[CURVES]`, `[OPTIONS]`, `[TIMES]`, `[CONTROLS]`, `[RULES]`, `[DEMANDS]`, `[EMITTERS]`, `[STATUS]`, `[SOURCES]`, `[REACTIONS]`, `[QUALITY]`, `[ENERGY]`, `[REPORT]`.
+- New `epanet` schema tables for metadata sections (all with `network_id` FK and `ON DELETE CASCADE`).
+- `src/epanet_sections.rs` — pure-Rust parsers for multi-line sections (patterns, curves, rules blocks) and key-value sections.
+- Table-returning functions: `epanet_patterns`, `epanet_curves`, `epanet_options`, `epanet_times`, `epanet_controls`, `epanet_rules`, `epanet_demands`, `epanet_emitters`, `epanet_status`, `epanet_sources`, `epanet_reactions`, `epanet_quality`, `epanet_energy`, `epanet_report`.
+- `epanet_import` now materialises all metadata sections alongside topology.
+- 9 new `#[pg_test]` cases and 4 unit tests in `epanet_sections` (44 tests total).
+
+### Changed
+- `epanet_simulate` emits PostgreSQL `WARNING` messages for EPANET solver codes 1–99 (pump out of range, unbalanced network, etc.), including timestep and error text.
+- Extended `tests/fixtures/simple.inp` with all metadata sections for integration testing.
+
 ## [0.1.0] — 2026-06-24
 
 ### Added
