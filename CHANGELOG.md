@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0] — 2026-06-24
+
 ### Added
 - `epanet` schema and all catalogue/result tables created at `CREATE EXTENSION pg_epanet` time (via `extension_sql!` bootstrap).
 - PostGIS declared as an extension dependency (`requires = 'postgis'`); `CREATE EXTENSION pg_epanet CASCADE` installs it automatically.
@@ -38,4 +40,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - When loading large INP files via psql `\COPY`, always use `ORDER BY lineno` with a `SERIAL` column — `ORDER BY ctid` does not guarantee insertion order for large files.
 - First packaged release; future versions upgrade via `ALTER EXTENSION pg_epanet UPDATE`.
 
-[unreleased]: https://github.com/danimarindev/pg_epanet/compare/HEAD...main
+[unreleased]: https://github.com/danimarindev/pg_epanet/compare/v0.1.0...main
+[0.1.0]: https://github.com/danimarindev/pg_epanet/releases/tag/v0.1.0
