@@ -1,6 +1,53 @@
 # Roadmap
 
-High-level plan for `pg_epanet`. Items within each milestone are roughly ordered by priority.
+Strategic plan for `pg_epanet`. Milestones are ordered by priority; items within each release are roughly ordered by implementation dependency.
+
+**Positioning:** pg_epanet does not compete with the OWA-EPANET hydraulic solver (C). It competes on **where network data and workflows live** — inside PostgreSQL, joinable with PostGIS assets, SCADA time series, and application logic in a single database.
+
+---
+
+## Industry context
+
+Water utilities and consultants typically operate across disconnected tools:
+
+| Industry gap | Typical workflow today | pg_epanet opportunity |
+|---|---|---|
+| **GIS ↔ model silo** | Assets in PostGIS; hydraulics in EPANET desktop or WNTR (Python) | Topology, geometry, and metadata as SQL tables joinable with `public.assets` |
+| **Mass scenario studies** | Python loops writing INP/RPT/OUT files to disk | Thousands of `epanet_simulate` calls in parallel inside Postgres |
+| **Operations vs model** | SCADA in TimescaleDB/influx; model recalibrated manually | Compare measured vs simulated pressure in one query |
+| **Water quality compliance** | Export to desktop for chlorine age / trace runs | WQ EPS results in SQL with regulatory aggregates |
+| **Resilience planning** | Ad-hoc consultant scripts per study | Pipe failures, demand stress, and climate scenarios as SQL rows |
+| **Managed cloud Postgres** | EPANET expects local filesystem (`/tmp`) | INP as `text`; future simulate without server-side files |
+| **Multi-utility SaaS** | One VM or database per client | `network_id` tenancy + RLS + admin helpers |
+
+The defensible value proposition: **eliminate the export → Python → re-import pipeline** for organisations that already store infrastructure data in PostGIS, and **scale bulk resilience studies** where Rust + Postgres parallelism beats sequential desktop runs.
+
+---
+
+## Release timeline
+
+```mermaid
+flowchart TB
+  subgraph done [Released]
+    v01[v0.1.0 Topology + EPS]
+    v02[v0.2.0 Metadata INP]
+    v021[v0.2.1 Indexes + docs]
+  end
+  subgraph epanet_core [EPANET focus]
+    v03[v0.3 Water quality]
+    v04[v0.4 Round-trip + production]
+    v05[v0.5 Scenarios + resilience]
+    v06[v0.6 Operational integration]
+    v07[v0.7 Scale + enterprise]
+  end
+  subgraph horizon [Much later]
+    swmm[SWMM stormwater]
+  end
+  done --> v03 --> v04 --> v05 --> v06 --> v07
+  v07 -.->|"post-v0.5, post-v0.7"| swmm
+```
+
+**Recommended order:** v0.3 → v0.4 → v0.5 → v0.6 → v0.7 → SWMM (horizon).
 
 ---
 
@@ -13,82 +60,197 @@ High-level plan for `pg_epanet`. Items within each milestone are roughly ordered
 - [x] PostGIS dependency (`requires = 'postgis'`) with automatic install via `CASCADE`
 - [x] `epanet_import(name, inp_text, srid)` — materialises INP sections into permanent tables
 - [x] INP sections imported: `[JUNCTIONS]`, `[RESERVOIRS]`, `[TANKS]`, `[PIPES]`, `[PUMPS]`, `[VALVES]`, `[COORDINATES]`, `[VERTICES]`
-- [x] Table-returning parse functions for all sections above (ad-hoc inspection without import)
+- [x] Table-returning parse functions for all topology sections
 - [x] PostGIS geometry: nodes → `Point`, pipes → `LineString` (with ordered vertices), pumps/valves → direct `LineString`
 - [x] `epanet_delete(network_id)` — CASCADE delete of network, topology, and simulation results
 - [x] `epanet_simulate(network_id)` — full EPS via OWA-EPANET 2.3 (`EN_openH / EN_runH / EN_nextH / EN_closeH`)
-- [x] Per-timestep results in `node_results.step` and `link_results.step`; `simulation_runs.n_steps` reflects actual step count
-- [x] Original INP stored verbatim in `networks.inp_text` for simulation re-use
-- [x] Docker image + `docker-compose.yml` (Postgres 18 + PostGIS 3 + pre-installed extension)
+- [x] Per-timestep results in `node_results.step` and `link_results.step`
+- [x] Original INP stored verbatim in `networks.inp_text`
+- [x] Docker image + `docker-compose.yml`
 - [x] Release tooling (`xtask/`) — Keep a Changelog, GitHub Releases
-- [x] 35 tests (`cargo pgrx test pg18`) — 28 `#[pg_test]` + 7 pure-Rust parser unit tests
 
 ---
 
 ## v0.2.0 — INP completeness & simulation polish ✅
 
-**Released 2026-06-24.** All EPANET metadata sections queryable in SQL; solver warnings surfaced to clients.
+**Released 2026-06-25.** All EPANET metadata sections queryable in SQL; solver warnings surfaced to clients.
 
 - [x] **Simulation warnings** — EPANET codes 1–99 emitted as PostgreSQL `WARNING` during `epanet_simulate`
-- [x] `[PATTERNS]` — demand/time multiplier curves (`patterns` table, indexed by `idx`)
-- [x] `[CURVES]` — head/volume/pump curves (`curves` table, indexed by `idx`)
-- [x] `[OPTIONS]` — simulation options (key-value `options` table)
-- [x] `[TIMES]` — duration and timestep settings (`times` table)
-- [x] `[CONTROLS]` / `[RULES]` — stored as full rule text in `controls` and `rules` tables
-- [x] `[SOURCES]` / `[REACTIONS]` / `[QUALITY]` — prerequisites for water quality (v0.3)
-- [x] `[EMITTERS]`, `[DEMANDS]`, `[STATUS]`, `[ENERGY]`, `[REPORT]` — imported with table-returning functions
+- [x] `[PATTERNS]`, `[CURVES]`, `[OPTIONS]`, `[TIMES]`, `[CONTROLS]`, `[RULES]`
+- [x] `[DEMANDS]`, `[EMITTERS]`, `[STATUS]`, `[SOURCES]`, `[REACTIONS]`, `[QUALITY]`, `[ENERGY]`, `[REPORT]`
 - [x] `src/epanet_sections.rs` — multi-line parsers (patterns, curves, rules blocks)
-- [x] 44 tests total (`cargo pgrx test pg18`)
-
-**Known gaps after v0.2.0:**
-
-- Simulation writes temporary `.inp/.rpt/.out` files under `/tmp` on the Postgres server
-- `epanet_simulate` reads `inp_text` verbatim — metadata tables not yet used to reconstruct INP
-- Structured parse of CONTROLS/RULES into columns — backlog for `epanet_export` (v0.4)
+- [x] Table-returning functions for every metadata section
+- [x] `epanet_import` materialises metadata alongside topology
 
 ---
 
-## v0.3 — Water quality
+## v0.2.1 — Performance & documentation ✅
 
-**Goal:** extend simulation to water quality (WQ) using EPANET's `EN_solveQ` / `EN_runQ` / `EN_nextQ`.
+**Released 2026-06-25.** Query performance for graph traversal and simulation lookup; usage documentation.
 
-- [ ] `epanet_simulate_quality(network_id, run_id)` — runs WQ on top of an existing hydraulic run
-- [ ] `epanet.node_quality_results` — chlorine / age / trace concentration per node per timestep
+- [x] B-tree indexes on `(network_id, node1)` and `(network_id, node2)` for `pipes`, `pumps`, `valves`
+- [x] B-tree index on `simulation_runs(network_id)`
+- [x] README usage guide (import → query → simulate → results)
+- [x] README performance & indexes reference table
+- [x] 45 tests (`cargo pgrx test pg18`)
+
+**Carried forward (not yet solved):**
+
+- Simulation writes temporary `.inp/.rpt/.out` files under `/tmp` on the Postgres server → v0.4
+- `epanet_simulate` reads `inp_text` verbatim — metadata edits in SQL not reflected in simulation → v0.4
+- Structured parse of CONTROLS/RULES into columns → v0.4 (`epanet_export`)
+
+---
+
+## v0.3 — Water quality & compliance analytics
+
+**Goal:** extend simulation to water quality (WQ) and expose results for regulatory and operational reporting.
+
+**Industry need:** utilities must demonstrate chlorine residuals, water age, and trace substance behaviour across the network. Consultants today export to EPANET desktop or WNTR for WQ runs, then manually join results back to GIS.
+
+**Deliverables:**
+
+- [ ] FFI bindings: `EN_openQ`, `EN_initQ`, `EN_runQ`, `EN_nextQ`, `EN_closeQ` in `src/ffi.rs`
+- [ ] `epanet_simulate_quality(network_id, run_id)` — WQ on top of an existing hydraulic run
+- [ ] `epanet.node_quality_results` — concentration / water age / trace per node per timestep
 - [ ] `epanet.link_quality_results` — average quality per link per timestep
+- [ ] Indexes on `(run_id)` and `(run_id, step)` — same pattern as hydraulic result tables
+- [ ] SQL helpers (views or functions): min/max chlorine by zone, % nodes below threshold, mean water age by DMA (when node mapping exists)
+
+**Depends on:** metadata sections `[SOURCES]`, `[REACTIONS]`, `[QUALITY]` imported in v0.2.0.
 
 ---
 
-## v0.4 — Bulk workflows & convenience
+## v0.4 — Round-trip, validation & production hardening
 
-**Goal:** make multi-network and multi-scenario workflows ergonomic.
+**Goal:** make pg_epanet a two-way model store and production-ready on managed Postgres.
 
-- [ ] `epanet_import_file(network_name, file_path, srid)` — optional server-side file read (superuser only) for local deployments
-- [ ] `epanet_export(network_id) → text` — regenerate a valid INP from stored tables
-- [ ] Idempotent import: `epanet_import(..., replace := true)` to update an existing network by name
-- [ ] Performance: batch geometry updates (currently one `UPDATE` per node/link type during import)
+**Industry need:** hydraulic models are maintained in GIS/CMMS; the INP is a snapshot. Without export and validation, pg_epanet is ingest-only. RDS, Supabase, and similar platforms restrict or discourage server-side temp files — blocking `epanet_simulate` today.
+
+**Deliverables:**
+
+- [ ] `epanet_export(network_id) → text` — regenerate a valid INP from stored tables (CONTROLS/RULES as `rule_text` initially; structured columns later)
+- [ ] `epanet_validate(network_id)` — orphan nodes, links referencing missing nodes, disconnected components, dangling curve/pattern references
+- [ ] **Simulate from tables** — rebuild INP from SQL state so edits to demands, status, or options take effect without manual `inp_text` updates
+- [ ] `epanet_import(..., replace := true)` — idempotent import by network name
+- [ ] **Simulation without `/tmp`** — in-memory or `bytea`-backed EPANET project open (critical for locked-down managed Postgres)
+- [ ] Import performance: batch geometry `UPDATE`s (currently one update per node/link type in `src/lib.rs`)
+- [ ] Optional local-only: `epanet_import_file(network_name, file_path, srid)` — superuser, server-side read
 
 ---
 
-## v0.5 — SWMM
+## v0.5 — Scenarios, resilience & comparative analytics
 
-**Goal:** extend the same architecture to SWMM stormwater networks using the shared section tokeniser.
+**Goal:** support multi-scenario and resilience workflows entirely in SQL.
 
-- [ ] `swmm_import(name, inp_text, srid)` — parse SWMM `.inp` files
-- [ ] SWMM node tables: junctions, outfalls, storage
-- [ ] SWMM link tables: conduits, weirs, orifices, pumps
+**Industry need:** master plans, drought studies, pipe-break analysis, and fire-flow checks require **dozens to hundreds of comparable runs**. Today this means WNTR/Python loops and file management. pg_epanet's parallel bulk-load story applies equally to parallel simulation.
+
+**Deliverables:**
+
+- [ ] `epanet.scenarios` table — parameter sets per `network_id` (demand multiplier, pipe status overrides, pump speed, roughness factors, etc.)
+- [ ] `epanet_simulate_scenario(scenario_id)` and/or batch `epanet_simulate_all(network_id, scenario_ids[])`
+- [ ] `epanet.compare_runs(run_id_a, run_id_b)` — pressure/flow deltas per node/link
+- [ ] **Basic criticality** — simulate pipe closure (or subset) and report affected nodes / pressure drop (graph traversal via v0.2.1 endpoint indexes)
+- [ ] **Fire flow** (stretch) — required flow at a junction via demand override + single timestep
+- [ ] Documented pattern for parallel scenario execution (multiple sessions, `pg_background`, or job queue)
+
+SWMM is **not** in scope for v0.5 — this milestone is EPANET resilience only.
+
+---
+
+## v0.6 — Operational integration & digital-twin patterns
+
+**Goal:** bridge live operational data (SCADA, AMI) with the hydraulic model inside Postgres.
+
+**Industry need:** AMI and SCADA produce continuous time series; the hydraulic model is static until someone manually recalibrates. A digital twin requires joining telemetry, topology, and simulation in one place — not three export/import steps.
+
+**Deliverables (patterns, no vendor lock-in):**
+
+- [ ] `epanet.node_mapping` — `(network_id, node_id, external_id, scada_tag, asset_gid)` with optional join to GIS asset tables
+- [ ] Views or documented conventions: `model_vs_scada` — join `node_results` with external reading tables (e.g. TimescaleDB hypertable in `public.scada_readings`)
+- [ ] `epanet_apply_demands(network_id, source)` — update junction demands from measured or forecast data before simulate
+- [ ] **Snapshot versioning** — `network_versions` or temporal tables for topology/INP audit trail
+- [ ] **Calibration hooks** — apply roughness/demand overrides, run simulate, return RMSE vs SCADA (outer optimisation loop stays in SQL; pg_epanet provides simulate + diff primitives)
+
+TimescaleDB integration: documented recipes only — no hard dependency.
+
+---
+
+## v0.7 — Scale, packaging & multi-tenant
+
+**Goal:** production deployment at utility and consultant scale.
+
+**Industry need:** multi-utility SaaS, very large EPS runs (111k+ result rows per run already validated on a real Costa Rica network in v0.1.0), and installation without a Rust toolchain on every server.
+
+**Deliverables:**
+
+- [ ] Partition `node_results` and `link_results` by `run_id` (native PostgreSQL partitioning)
+- [ ] `epanet_admin_*` helpers — list networks, list runs, table sizes, purge old runs
+- [ ] Example Row-Level Security policies for multi-tenant `network_id` / organisation isolation
+- [ ] Configurable guardrails — GUCs or config table for `max_nodes`, simulate timeout, max parallel runs
+- [ ] Packaging: PGXN, release binaries, versioned Docker image with prebuilt extension
+- [ ] Attach EPANET `.out` binary as `bytea` on `simulation_runs` for downstream desktop tools
+- [ ] PostgreSQL 19 compatibility pass (pgrx feature flag already exists)
+
+---
+
+## Horizon — SWMM (post-v0.5, likely post-v0.7)
+
+SWMM shares the section tokeniser in `src/inp.rs` but is a distinct product: separate schema, OWA-SWMM FFI, hydrology semantics, and a different user base (stormwater vs distribution).
+
+> **Not planned until the EPANET cycle through v0.5–v0.7 is complete.** Rough estimate: post-v0.7 / v1.x timeframe.
+
+**Phase 1 — parse & import:**
+
+- [ ] `swmm_import(name, inp_text, srid)` — parse SWMM `.inp` into `swmm` schema tables
+- [ ] Node tables: junctions, outfalls, storage units
+- [ ] Link tables: conduits, weirs, orifices, pumps
 - [ ] Table-returning functions: `swmm_junctions()`, `swmm_conduits()`, etc.
-- [ ] Optional: hydraulic/hydrology simulation via OWA-SWMM C toolkit
+- [ ] PostGIS geometry for SWMM nodes and links
+
+**Phase 2 — simulation (optional, later):**
+
+- [ ] Hydraulic/hydrology simulation via OWA-SWMM C toolkit
+- [ ] Result tables analogous to `node_results` / `link_results`
 
 ---
 
-## Backlog / ideas
+## Backlog / research
 
-Not yet scheduled into a milestone:
+Not scheduled into a semver milestone. Candidates for future prioritisation based on user demand.
 
-- **Scenario management** — store multiple parameter sets (demands, roughness) for the same topology; run comparative simulations
-- **pg_epanet_admin** — helper functions to list networks, runs, disk usage
-- **Partitioning** — partition `node_results` and `link_results` by `run_id` for very large EPS runs
-- **Binary result files** — attach EPANET's `.out` file as a `bytea` column for downstream tools
-- **Packaging** — pre-built binaries / PGXN package for installation without a Rust toolchain
-- **Simulation without `/tmp`** — in-memory or `bytea`-backed EPANET project open (relevant for locked-down managed Postgres)
-- **PostgreSQL 19** — pgrx feature flag exists; track compatibility as PG19 stabilises
+### Analytics & graph
+
+- **Connectivity analysis** — detect isolated subgraphs, service area per reservoir/tank
+- **Critical pipe ranking** — betweenness or failure-impact scoring (pgRouting or custom SQL/graph functions)
+- **NRW / water balance** — join simulated demands vs district metered consumption
+- **Pump energy optimisation** — SQL over `energy` metadata + EPS results for cost scenarios
+- **Leak localisation** — emitter calibration against night-line pressure patterns
+
+### Data integration & export
+
+- **Uncertainty / Monte Carlo** — generate N parameter variants in SQL → N simulation runs without leaving the database
+- **Foreign Data Wrapper** — read INP from S3, HTTP, or object storage without staging table
+- **GeoJSON / FGDB views** — standard GIS export without shapefile round-trip
+- **MVT vector tiles** — `ST_AsMVT` views for QGIS and web maps directly from `epanet.pipes`
+- **Open standards alignment** — Utility Network / IFC export research
+
+### Operations & scheduling
+
+- **pg_cron recipes** — nightly hydraulic refresh, stale-run cleanup
+- **Scenario management** — named parameter libraries shared across networks (extends v0.5)
+- **Binary result retention policy** — tiered storage for `.out` files vs SQL aggregates
+
+### Platform
+
+- **Simulation resource isolation** — per-role limits, queue table for long-running jobs
+- **Read replicas** — document simulate-on-primary / query-on-replica patterns
+- **Extension observability** — `pg_stat` wrappers, simulate duration logging
+
+---
+
+## How to contribute
+
+Pick an unchecked item from the next open milestone (currently **v0.3**). Open an issue or PR referencing the milestone. For larger industry features (v0.6 digital twin, v0.5 scenarios), start with a design issue before implementation.
+
+See [README.md](README.md) for current API and [CHANGELOG.md](CHANGELOG.md) for release history.
