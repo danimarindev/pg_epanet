@@ -2,7 +2,7 @@
 
 PostgreSQL extension (written in Rust via [pgrx](https://github.com/pgcentralfoundation/pgrx)) that parses EPANET `.inp` water network files and materialises them as queryable SQL tables with PostGIS geometry.
 
-> **Status:** [v0.2.0](https://github.com/danimarindev/pg_epanet/releases/tag/v0.2.0) released — see [CHANGELOG.md](CHANGELOG.md) for details.
+> **Status:** [v0.2.1](https://github.com/danimarindev/pg_epanet/releases/tag/v0.2.1) released — see [CHANGELOG.md](CHANGELOG.md) for details.
 
 ## Why pg_epanet?
 
@@ -49,7 +49,7 @@ The image uses `postgres:18-trixie` with PostGIS 3 from PGDG (native arm64; the 
 Check out a tagged version and build against your PostgreSQL installation:
 
 ```bash
-git checkout v0.2.0
+git checkout v0.2.1
 cargo install cargo-pgrx --version '=0.19.1'
 cargo pgrx init
 cargo pgrx install --release --features pg18 --no-default-features --pg-config $(which pg_config)
@@ -74,13 +74,8 @@ SELECT epanet_import(name || '_v2', inp_text, srid)
 FROM epanet.networks;
 ```
 
-If you are on **0.2.0** and built from `main` after the performance-index patch, apply:
-
-```sql
-\i sql/pg_epanet--0.2.0--0.2.1.sql
-```
-
-(or wait for release **0.2.1** and `ALTER EXTENSION pg_epanet UPDATE TO '0.2.1'`).
+-- From 0.2.0 (indexes only)
+ALTER EXTENSION pg_epanet UPDATE TO '0.2.1';
 
 ## Usage guide
 
