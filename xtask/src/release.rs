@@ -12,6 +12,7 @@ pub struct ReleaseOptions {
     pub version: Version,
     pub create_github_release: bool,
     pub github_release_only: bool,
+    pub yes: bool,
 }
 
 fn repo_root() -> PathBuf {
@@ -329,26 +330,36 @@ pub fn run(opts: ReleaseOptions) -> Result<(), String> {
     println!("  ✓ {release_kind} {tag} prepared");
     println!();
 
-    let mut pushed = false;
-    if confirm("  Push commit and tag to origin? [y/N] ") {
+    let pushed = if opts.yes {
         git_quiet(&root, &["push", "origin", "HEAD"]);
         git_quiet(&root, &["push", "origin", &tag]);
-        pushed = true;
         println!("  ✓ pushed");
+        true
+    } else if confirm("  Push commit and tag to origin? [y/N] ") {
+        git_quiet(&root, &["push", "origin", "HEAD"]);
+        git_quiet(&root, &["push", "origin", &tag]);
+        println!("  ✓ pushed");
+        true
     } else {
         println!("  Skipped. To push manually:");
         println!("      git push origin HEAD && git push origin {tag}");
-    }
+        false
+    };
 
-    let mut create_release = opts.create_github_release;
-    if !create_release && pushed {
-        create_release = confirm("  Create GitHub Release with CHANGELOG notes? [y/N] ");
-    }
+    let create_release = if opts.yes {
+        opts.create_github_release
+    } else {
+        let mut create = opts.create_github_release;
+        if !create && pushed {
+            create = confirm("  Create GitHub Release with CHANGELOG notes? [y/N] ");
+        }
+        create
+    };
 
     if create_release {
         if !pushed {
             println!("  Note: tag must exist on GitHub before gh release create.");
-            if !confirm("  Continue anyway? [y/N] ") {
+            if !opts.yes && !confirm("  Continue anyway? [y/N] ") {
                 die("aborted GitHub Release");
             }
         }

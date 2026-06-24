@@ -22,6 +22,9 @@ enum Command {
         create_github_release: bool,
         #[arg(long)]
         github_release_only: bool,
+        /// Non-interactive: auto-push and honour --create-github-release
+        #[arg(long, short = 'y')]
+        yes: bool,
     },
     /// Move [Unreleased] content to a versioned CHANGELOG section
     CloseUnreleased {
@@ -57,10 +60,12 @@ fn main() {
             version,
             create_github_release,
             github_release_only,
+            yes,
         } => release::run(release::ReleaseOptions {
             version: parse_version(&version),
             create_github_release,
             github_release_only,
+            yes,
         }),
         Command::CloseUnreleased { version, date } => {
             release::close_unreleased(&parse_version(&version), date.as_deref())

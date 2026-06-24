@@ -8,16 +8,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-- Release tooling migrated to Rust (`xtask/`): Keep a Changelog parsing, GitHub Release notes, full release workflow.
-
-## [0.1.0] — 2026-06-24
-
-### Notes
-- First stable release; no functional changes since 0.1.0-rc.1.
-
-## [0.1.0-rc.1] — 2026-06-24
-
-### Added
 - `epanet` schema and all catalogue/result tables created at `CREATE EXTENSION pg_epanet` time (via `extension_sql!` bootstrap).
 - PostGIS declared as an extension dependency (`requires = 'postgis'`); `CREATE EXTENSION pg_epanet CASCADE` installs it automatically.
 - Docker image (`postgres:18-trixie` + PostGIS 3 from PGDG) and `docker-compose.yml` for local use.
@@ -36,6 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Generic INP parser (`mod inp`) — tokenises sections and fields; engine-agnostic, ready for SWMM reuse.
 - 35 unit tests (`cargo pgrx test pg18`) covering parsing edge cases, import/delete, and spatial indexes.
 - Tested with a real 1,152-node / 1,165-pipe Costa Rica distribution network (351 KB INP, EPSG:5367), producing 97 EPS timesteps × 1,152 nodes = 111,744 result rows.
+- Release tooling in Rust (`xtask/`): Keep a Changelog parsing, GitHub Release notes, full release workflow.
 
 ### Changed
 - OWA-EPANET 2.3 C source vendored directly into `vendor/epanet/` with a hand-written `build.rs` and `src/ffi.rs`. Removed dependency on the `epanet-sys` crate.
@@ -47,8 +38,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - When loading large INP files via psql `\COPY`, always use `ORDER BY lineno` with a `SERIAL` column — `ORDER BY ctid` does not guarantee insertion order for large files.
 - First packaged release; future versions upgrade via `ALTER EXTENSION pg_epanet UPDATE`.
 
-
-
-[unreleased]: https://github.com/danimarindev/pg_epanet/compare/v0.1.0...main
-[0.1.0]: https://github.com/danimarindev/pg_epanet/compare/v0.1.0-rc.1...v0.1.0
-[0.1.0-rc.1]: https://github.com/danimarindev/pg_epanet/compare/v0.0.0...v0.1.0-rc.1
+[unreleased]: https://github.com/danimarindev/pg_epanet/compare/HEAD...main
