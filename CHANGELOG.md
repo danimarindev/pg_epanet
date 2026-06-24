@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] — 2026-06-25
+
 ### Added
 - Import and table-returning functions for all remaining EPANET metadata sections: `[PATTERNS]`, `[CURVES]`, `[OPTIONS]`, `[TIMES]`, `[CONTROLS]`, `[RULES]`, `[DEMANDS]`, `[EMITTERS]`, `[STATUS]`, `[SOURCES]`, `[REACTIONS]`, `[QUALITY]`, `[ENERGY]`, `[REPORT]`.
 - New `epanet` schema tables for metadata sections (all with `network_id` FK and `ON DELETE CASCADE`).
@@ -52,5 +54,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - When loading large INP files via psql `\COPY`, always use `ORDER BY lineno` with a `SERIAL` column — `ORDER BY ctid` does not guarantee insertion order for large files.
 - First packaged release; future versions upgrade via `ALTER EXTENSION pg_epanet UPDATE`.
 
-[unreleased]: https://github.com/danimarindev/pg_epanet/compare/v0.1.0...main
+[unreleased]: https://github.com/danimarindev/pg_epanet/compare/v0.2.0...main
+[0.2.0]: https://github.com/danimarindev/pg_epanet/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/danimarindev/pg_epanet/releases/tag/v0.1.0
