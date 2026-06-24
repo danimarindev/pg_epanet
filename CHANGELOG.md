@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- B-tree indexes on `(network_id, node1)` and `(network_id, node2)` for `pipes`, `pumps`, and `valves` — faster graph traversal and incident-link lookups.
+- B-tree index on `simulation_runs(network_id)` — list simulation runs per network.
+- `#[pg_test]` verifying topology and simulation-run indexes exist at install time.
+
+### Changed
+- README: usage guide (import → query → simulate → results), upgrade notes, and performance/index reference table.
+
 ## [0.2.0] — 2026-06-25
 
 ### Added

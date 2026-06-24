@@ -145,12 +145,22 @@ CREATE TABLE epanet.link_results (
 
 CREATE INDEX link_results_run ON epanet.link_results(run_id);
 
+CREATE INDEX simulation_runs_network ON epanet.simulation_runs(network_id);
+
 CREATE INDEX junctions_geom  ON epanet.junctions  USING GIST (geom);
 CREATE INDEX reservoirs_geom ON epanet.reservoirs USING GIST (geom);
 CREATE INDEX tanks_geom      ON epanet.tanks      USING GIST (geom);
 CREATE INDEX pipes_geom      ON epanet.pipes      USING GIST (geom);
 CREATE INDEX pumps_geom      ON epanet.pumps      USING GIST (geom);
 CREATE INDEX valves_geom     ON epanet.valves     USING GIST (geom);
+
+-- Endpoint lookups: pipes/pumps/valves joined to nodes by node1/node2
+CREATE INDEX pipes_node1  ON epanet.pipes  (network_id, node1);
+CREATE INDEX pipes_node2  ON epanet.pipes  (network_id, node2);
+CREATE INDEX pumps_node1  ON epanet.pumps  (network_id, node1);
+CREATE INDEX pumps_node2  ON epanet.pumps  (network_id, node2);
+CREATE INDEX valves_node1 ON epanet.valves (network_id, node1);
+CREATE INDEX valves_node2 ON epanet.valves (network_id, node2);
 
 CREATE TABLE epanet.patterns (
     network_id  INT NOT NULL REFERENCES epanet.networks(id) ON DELETE CASCADE,

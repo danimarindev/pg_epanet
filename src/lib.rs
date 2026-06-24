@@ -744,6 +744,25 @@ $inp$";
     }
 
     #[pg_test]
+    fn test_epanet_topology_endpoint_indexes() {
+        for (table, index) in [
+            ("pipes", "pipes_node1"),
+            ("pipes", "pipes_node2"),
+            ("pumps", "pumps_node1"),
+            ("valves", "valves_node1"),
+            ("simulation_runs", "simulation_runs_network"),
+        ] {
+            let n = Spi::get_one::<i64>(&format!(
+                "SELECT count(*)::bigint FROM pg_indexes \
+                 WHERE schemaname = 'epanet' AND tablename = '{table}' AND indexname = '{index}'"
+            ))
+            .unwrap()
+            .unwrap();
+            assert_eq!(n, 1, "missing index {index} on {table}");
+        }
+    }
+
+    #[pg_test]
     fn test_epanet_junctions_demand_defaults_to_zero() {
         let (demand, pattern) = Spi::get_two::<f64, String>(
             "SELECT demand, pattern FROM epanet_junctions($inp$

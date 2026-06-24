@@ -63,6 +63,199 @@ CREATE EXTENSION pg_epanet CASCADE;
 
 Or use Docker (see above) for a ready-made PostgreSQL 18 + PostGIS + pg_epanet stack.
 
+### Upgrading
+
+```sql
+-- From 0.1.0
+ALTER EXTENSION pg_epanet UPDATE TO '0.2.0';
+
+-- Re-import networks to populate metadata tables (upgrade does not backfill)
+SELECT epanet_import(name || '_v2', inp_text, srid)
+FROM epanet.networks;
+```
+
+If you are on **0.2.0** and built from `main` after the performance-index patch, apply:
+
+```sql
+\i sql/pg_epanet--0.2.0--0.2.1.sql
+```
+
+(or wait for release **0.2.1** and `ALTER EXTENSION pg_epanet UPDATE TO '0.2.1'`).
+
+## Usage guide
+
+Typical workflow: install extension → import INP → query topology/metadata → simulate → analyse results.
+
+### 1. Install
+
+```sql
+CREATE EXTENSION pg_epanet CASCADE;   -- pulls in PostGIS
+```
+
+### 2. Import a network
+
+Pass the full INP as `text`. Returns `network_id` (integer PK in `epanet.networks`).
+
+```sql
+SELECT epanet_import(
+  'downtown',          -- name (not unique; each import creates a new row)
+  pg_read_file('/path/on/server/network.inp'),  -- or $inp$ ... $inp$ from client
+  25830                -- SRID for [COORDINATES] → PostGIS geom
+) AS network_id;
+```
+
+From psql with a local file (client-side read):
+
+```sql
+\set content `cat tests/fixtures/simple.inp`
+SELECT epanet_import('simple', :'content', 4326);
+```
+
+Every `[JUNCTIONS]`, `[PIPES]`, … section listed under [Features](#inp-sections-supported-v020) is parsed once at import and stored in `epanet.*` tables. The raw INP is also kept in `networks.inp_text` for simulation.
+
+### 3. Explore topology (SQL + GIS)
+
+```sql
+-- All nodes with geometry (junctions + tanks + reservoirs)
+SELECT node_id, node_type, elevation, ST_AsText(geom) AS wkt
+FROM epanet.nodes
+WHERE network_id = 1;
+
+-- Pipes longer than 500 m
+SELECT name, length, diameter, status
+FROM epanet.pipes
+WHERE network_id = 1 AND length > 500;
+
+-- Spatial filter: nodes inside a polygon (use your AOI table)
+SELECT j.name, j.demand
+FROM epanet.junctions j
+JOIN public.my_aoi a ON ST_Within(j.geom, a.geom)
+WHERE j.network_id = 1;
+
+-- Graph: links incident on a junction (uses pipes_node1 / pipes_node2 indexes)
+SELECT p.name, p.node1, p.node2, p.diameter
+FROM epanet.pipes p
+WHERE p.network_id = 1 AND (p.node1 = 'J1' OR p.node2 = 'J1');
+```
+
+Join pipes to junctions for attribute + geometry overlays:
+
+```sql
+SELECT p.name AS pipe, j1.name AS from_node, j2.name AS to_node, p.geom
+FROM epanet.pipes p
+JOIN epanet.junctions j1 ON j1.network_id = p.network_id AND j1.name = p.node1
+JOIN epanet.junctions j2 ON j2.network_id = p.network_id AND j2.name = p.node2
+WHERE p.network_id = 1;
+```
+
+### 4. Query metadata
+
+```sql
+-- Demand pattern multipliers
+SELECT pattern_id, idx, multiplier
+FROM epanet.patterns
+WHERE network_id = 1 AND pattern_id = 'PD1'
+ORDER BY idx;
+
+-- Pump head curve points
+SELECT curve_id, idx, x, y
+FROM epanet.curves
+WHERE network_id = 1 AND curve_id = 'HC1'
+ORDER BY idx;
+
+-- Simulation options
+SELECT key, value FROM epanet.options WHERE network_id = 1;
+
+-- Rule-based controls (full text block)
+SELECT rule_id, rule_text FROM epanet.rules WHERE network_id = 1;
+```
+
+Ad-hoc parse without import (re-parses INP on every query — fine for small files):
+
+```sql
+SELECT * FROM epanet_patterns((SELECT inp_text FROM epanet.networks WHERE id = 1));
+```
+
+### 5. Run hydraulic simulation (EPS)
+
+```sql
+SET client_min_messages TO warning;   -- see EPANET solver warnings (codes 1–99)
+
+SELECT epanet_simulate(1) AS run_id;
+-- → inserts one row in simulation_runs, bulk rows in node_results / link_results
+```
+
+Simulation reads `networks.inp_text` verbatim (patterns, curves, controls in the INP are used even if you only changed SQL tables).
+
+```sql
+-- Latest run for a network
+SELECT id, ran_at, n_steps
+FROM epanet.simulation_runs
+WHERE network_id = 1
+ORDER BY id DESC
+LIMIT 1;
+
+-- Pressure envelope across all timesteps
+SELECT node_id,
+       min(pressure) AS min_p,
+       max(pressure) AS max_p
+FROM epanet.node_results
+WHERE run_id = 1
+GROUP BY node_id
+ORDER BY min_p;
+
+-- One timestep, join to geometry
+SELECT r.step, r.node_id, r.pressure, n.geom
+FROM epanet.node_results r
+JOIN epanet.nodes n ON n.network_id = 1 AND n.node_id = r.node_id
+WHERE r.run_id = 1 AND r.step = 0;
+```
+
+### 6. Delete a network
+
+```sql
+SELECT epanet_delete(1);   -- CASCADE: topology, metadata, simulation_runs, results
+```
+
+### 7. Bulk import (many scenarios in parallel)
+
+Each `epanet_import` call is independent — safe to run from multiple sessions:
+
+```sql
+-- Example: one INP per row in a staging table
+CREATE TABLE scenarios (name text, inp text, srid int);
+-- ... load rows ...
+
+SELECT s.name, epanet_import(s.name, s.inp, s.srid) AS network_id
+FROM scenarios s;
+```
+
+For very large INPs, use the `\COPY` + `string_agg` pattern below to avoid passing multi-MB strings on the wire twice.
+
+## Performance & indexes
+
+All entity tables use composite primary keys starting with `network_id`, so `WHERE network_id = $1` hits the PK B-tree prefix on every table.
+
+| Index | Table | Purpose |
+|-------|-------|---------|
+| `epanet_networks_name` | `networks` | lookup by name |
+| `junctions_geom` … `valves_geom` | topology | GiST spatial queries (`ST_Within`, `&&`, etc.) |
+| `pipes_node1`, `pipes_node2` | `pipes` | incident links / graph traversal |
+| `pumps_node1`, `pumps_node2` | `pumps` | same |
+| `valves_node1`, `valves_node2` | `valves` | same |
+| `simulation_runs_network` | `simulation_runs` | list runs per network |
+| `node_results_run` | `node_results` | filter results by `run_id` (PK prefix also covers this) |
+| `link_results_run` | `link_results` | same |
+
+Metadata tables (`patterns`, `curves`, `options`, …) rely on `(network_id, …)` PKs — no extra indexes needed for typical per-network queries.
+
+**Tips**
+
+- Always filter by `network_id` first — every hot path assumes it.
+- Prefer imported tables over table-returning functions for repeated queries (parse once at import).
+- For EPS result tables with millions of rows, filter by `run_id` and optionally `step`; consider partitioning by `run_id` (backlog — see ROADMAP).
+- `epanet_simulate` writes temp files under `/tmp` on the server; bulk parallel runs need disk headroom there.
+
 ## Quick start
 
 ```sql
@@ -169,20 +362,22 @@ Created at `CREATE EXTENSION pg_epanet`:
 
 **Topology**
 - `junctions`, `reservoirs`, `tanks` — nodes with `geom geometry(Point)` and GiST index
-- `pipes`, `pumps`, `valves` — links with `geom geometry(LineString)` and GiST index
+- `pipes`, `pumps`, `valves` — links with `geom geometry(LineString)`, GiST index, and `(network_id, node1/node2)` B-tree indexes
 - `coordinates`, `vertices` — raw geometry data (vertices ordered by `idx`)
 - `nodes` — unified view of all node types
 
 **Metadata**
-- `patterns`, `curves` — time multipliers and curve points (indexed by `idx` per id)
+- `patterns`, `curves` — time multipliers and curve points (PK: `network_id`, id, `idx`)
 - `options`, `times`, `reactions`, `quality`, `energy`, `report` — key-value settings
 - `controls`, `rules` — control logic stored as full rule text
 - `demands`, `emitters`, `status`, `sources` — per-element overrides
 
 **Simulation results**
-- `simulation_runs` — one row per simulation run (`n_steps` = timesteps solved)
-- `node_results` — head, pressure, demand per node per `step`
+- `simulation_runs` — one row per simulation run (`n_steps` = timesteps solved); indexed on `network_id`
+- `node_results` — head, pressure, demand per node per `step` (PK: `run_id`, `step`, `node_id`)
 - `link_results` — flow, velocity, headloss per link per `step`
+
+See [Performance & indexes](#performance--indexes) for the full index list and query tips.
 
 ## Building from source
 
