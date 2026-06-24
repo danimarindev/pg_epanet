@@ -19,15 +19,23 @@ For users who already store infrastructure data in PostGIS this eliminates the i
 ## Requirements
 
 - PostgreSQL 13–18
-- [PostGIS](https://postgis.net/) extension
+- [PostGIS](https://postgis.net/) extension (installed automatically when you `CREATE EXTENSION pg_epanet CASCADE`)
 - Rust + [pgrx](https://github.com/pgcentralfoundation/pgrx) (for building from source)
+
+## Docker
+
+```bash
+docker compose up -d
+psql "postgresql://postgres:pg_epanet@localhost:5432/pg_epanet" -c "SELECT extname FROM pg_extension;"
+```
+
+The image uses `postgres:18-trixie` with PostGIS 3 from PGDG (native arm64; the `postgis/postgis:18-3.6` tag is amd64-only). The extension is pre-installed on first database init.
 
 ## Quick start
 
 ```sql
--- 1. Enable required extensions
-CREATE EXTENSION postgis;
-CREATE EXTENSION pg_epanet;
+-- 1. Enable pg_epanet (PostGIS is installed automatically via CASCADE)
+CREATE EXTENSION pg_epanet CASCADE;
 
 -- 2. Import a network (pass the INP file content as text)
 SELECT epanet_import('my_network', $inp$
@@ -126,8 +134,8 @@ cargo pgrx run pg18   # compiles, starts sandbox, opens psql
 
 Inside psql after code changes:
 ```sql
-DROP EXTENSION pg_epanet;
-CREATE EXTENSION pg_epanet;
+DROP EXTENSION pg_epanet CASCADE;
+CREATE EXTENSION pg_epanet CASCADE;
 ```
 
 Run the test suite:

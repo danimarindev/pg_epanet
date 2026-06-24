@@ -1,0 +1,13 @@
+services:
+  db:
+    build: .
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_PASSWORD: pg_epanet
+      POSTGRES_DB: pg_epanet
+    volumes:
+      - pgdata:/var/lib/postgresql
+
+volumes:
+  pgdata:

@@ -13,7 +13,6 @@ High-level plan for `pg_epanet`. Items within each milestone are roughly ordered
 - [ ] **Simulation warnings** — surface EPANET warning codes (e.g. unbalanced network, negative pressures) as PostgreSQL `WARNING` messages rather than silently ignoring them.
 - [ ] **`epanet_delete(network_id int)`** — convenience function to remove a network and all its results via CASCADE.
 - [ ] GiST spatial indexes on all `geom` columns (currently missing; important for large networks).
-- [ ] Suppress spurious `NOTICE: column already exists` messages from `create_epanet_schema`.
 
 ---
 

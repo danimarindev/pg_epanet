@@ -2,5 +2,6 @@ comment = 'pg_epanet:  Created by pgrx'
 default_version = '@CARGO_VERSION@'
 module_pathname = 'pg_epanet'
 relocatable = false
+requires = 'postgis'
 superuser = true
 trusted = false

@@ -8,6 +8,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- `epanet` schema and all catalogue/result tables created at `CREATE EXTENSION pg_epanet` time (via `extension_sql!` bootstrap).
+- PostGIS declared as an extension dependency (`requires = 'postgis'`); `CREATE EXTENSION pg_epanet CASCADE` installs it automatically.
+- Docker image (`postgis/postgis:18-3.6` base) and `docker-compose.yml` for local use.
 - `epanet_import(name, inp_text, srid)` — parses an EPANET INP file and materialises all sections into permanent tables under the `epanet` schema.
 - Table-returning functions for all major INP sections: `epanet_junctions`, `epanet_reservoirs`, `epanet_tanks`, `epanet_pipes`, `epanet_pumps`, `epanet_valves`, `epanet_coordinates`, `epanet_vertices`.
 - PostGIS geometry generation:
@@ -16,7 +19,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   - Pumps and valves → direct node1→node2 `geometry(LineString)`.
 - `epanet.nodes` — unified view of all node types (junctions, tanks, reservoirs).
 - `epanet_simulate(network_id int) → int` — full Extended Period Simulation (EPS) using the official OWA-EPANET 2.3 C toolkit. Stores per-timestep results in `epanet.node_results` (head, pressure, demand) and `epanet.link_results` (flow, velocity, headloss). Returns the `run_id`.
-- Result tables created automatically by `epanet_import`: `epanet.simulation_runs`, `epanet.node_results`, `epanet.link_results`.
+- Result tables (`epanet.simulation_runs`, `epanet.node_results`, `epanet.link_results`) created at extension install time.
 - `inp_text TEXT` column on `epanet.networks` — the original INP is stored verbatim for simulation re-use.
 - Generic INP parser (`mod inp`) — tokenises sections and fields; engine-agnostic, ready for SWMM reuse.
 - 33 unit tests (`cargo pgrx test pg18`) covering parsing edge cases: optional fields, default values, `*` as NULL, case normalisation, empty sections, etc.

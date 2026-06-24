@@ -2,6 +2,7 @@ use pgrx::prelude::*;
 
 mod ffi;
 mod inp;
+mod schema;
 
 ::pgrx::pg_module_magic!(name, version);
 
@@ -81,148 +82,9 @@ fn sql_text(s: &str) -> String {
     format!("'{}'", s.replace('\'', "''"))
 }
 
-/// Creates the `epanet` schema and all its tables on first call; idempotent.
-/// Requires PostGIS — call only after confirming it is installed.
-fn create_epanet_schema() {
-    for sql in [
-        "CREATE SCHEMA IF NOT EXISTS epanet",
-        "CREATE TABLE IF NOT EXISTS epanet.networks (
-            id          SERIAL PRIMARY KEY,
-            name        TEXT NOT NULL,
-            imported_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-            srid        INT NOT NULL,
-            inp_text    TEXT NOT NULL
-        )",
-        "ALTER TABLE epanet.networks ADD COLUMN IF NOT EXISTS inp_text TEXT NOT NULL DEFAULT ''",
-        "CREATE INDEX IF NOT EXISTS epanet_networks_name ON epanet.networks(name)",
-        "CREATE TABLE IF NOT EXISTS epanet.junctions (
-            network_id  INT NOT NULL REFERENCES epanet.networks(id) ON DELETE CASCADE,
-            name        TEXT NOT NULL,
-            elevation   FLOAT8 NOT NULL,
-            demand      FLOAT8 NOT NULL,
-            pattern     TEXT,
-            geom        geometry(Point),
-            PRIMARY KEY (network_id, name)
-        )",
-        "CREATE TABLE IF NOT EXISTS epanet.reservoirs (
-            network_id  INT NOT NULL REFERENCES epanet.networks(id) ON DELETE CASCADE,
-            name        TEXT NOT NULL,
-            head        FLOAT8 NOT NULL,
-            pattern     TEXT,
-            geom        geometry(Point),
-            PRIMARY KEY (network_id, name)
-        )",
-        "CREATE TABLE IF NOT EXISTS epanet.tanks (
-            network_id   INT NOT NULL REFERENCES epanet.networks(id) ON DELETE CASCADE,
-            name         TEXT NOT NULL,
-            elevation    FLOAT8 NOT NULL,
-            init_level   FLOAT8 NOT NULL,
-            min_level    FLOAT8 NOT NULL,
-            max_level    FLOAT8 NOT NULL,
-            diameter     FLOAT8 NOT NULL,
-            min_volume   FLOAT8 NOT NULL,
-            volume_curve TEXT,
-            overflow     TEXT,
-            geom         geometry(Point),
-            PRIMARY KEY (network_id, name)
-        )",
-        "CREATE TABLE IF NOT EXISTS epanet.pipes (
-            network_id  INT NOT NULL REFERENCES epanet.networks(id) ON DELETE CASCADE,
-            name        TEXT NOT NULL,
-            node1       TEXT NOT NULL,
-            node2       TEXT NOT NULL,
-            length      FLOAT8 NOT NULL,
-            diameter    FLOAT8 NOT NULL,
-            roughness   FLOAT8 NOT NULL,
-            minor_loss  FLOAT8 NOT NULL,
-            status      TEXT NOT NULL,
-            geom        geometry(LineString),
-            PRIMARY KEY (network_id, name)
-        )",
-        "CREATE TABLE IF NOT EXISTS epanet.pumps (
-            network_id  INT NOT NULL REFERENCES epanet.networks(id) ON DELETE CASCADE,
-            name        TEXT NOT NULL,
-            node1       TEXT NOT NULL,
-            node2       TEXT NOT NULL,
-            pump_type   TEXT,
-            head_curve  TEXT,
-            power       FLOAT8,
-            speed       FLOAT8,
-            pattern     TEXT,
-            geom        geometry(LineString),
-            PRIMARY KEY (network_id, name)
-        )",
-        "CREATE TABLE IF NOT EXISTS epanet.valves (
-            network_id  INT NOT NULL REFERENCES epanet.networks(id) ON DELETE CASCADE,
-            name        TEXT NOT NULL,
-            node1       TEXT NOT NULL,
-            node2       TEXT NOT NULL,
-            diameter    FLOAT8 NOT NULL,
-            valve_type  TEXT NOT NULL,
-            setting     TEXT NOT NULL,
-            minor_loss  FLOAT8 NOT NULL,
-            geom        geometry(LineString),
-            PRIMARY KEY (network_id, name)
-        )",
-        "CREATE TABLE IF NOT EXISTS epanet.coordinates (
-            network_id  INT NOT NULL REFERENCES epanet.networks(id) ON DELETE CASCADE,
-            node_id     TEXT NOT NULL,
-            x           FLOAT8 NOT NULL,
-            y           FLOAT8 NOT NULL,
-            PRIMARY KEY (network_id, node_id)
-        )",
-        // idx preserves vertex order as they appear in the INP file
-        "CREATE TABLE IF NOT EXISTS epanet.vertices (
-            network_id  INT NOT NULL REFERENCES epanet.networks(id) ON DELETE CASCADE,
-            link_id     TEXT NOT NULL,
-            idx         INT NOT NULL,
-            x           FLOAT8 NOT NULL,
-            y           FLOAT8 NOT NULL,
-            PRIMARY KEY (network_id, link_id, idx)
-        )",
-        // Unified view of all node types — useful as a single GIS point layer
-        "CREATE OR REPLACE VIEW epanet.nodes AS
-            SELECT network_id, name AS node_id, 'junction'::text AS node_type, elevation, geom
-              FROM epanet.junctions
-            UNION ALL
-            SELECT network_id, name, 'tank',      elevation, geom FROM epanet.tanks
-            UNION ALL
-            SELECT network_id, name, 'reservoir', head,      geom FROM epanet.reservoirs",
-        // Hydraulic simulation result tables
-        "CREATE TABLE IF NOT EXISTS epanet.simulation_runs (
-            id         SERIAL PRIMARY KEY,
-            network_id INT NOT NULL REFERENCES epanet.networks(id) ON DELETE CASCADE,
-            ran_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
-            n_steps    INT NOT NULL
-        )",
-        "CREATE TABLE IF NOT EXISTS epanet.node_results (
-            run_id   INT NOT NULL REFERENCES epanet.simulation_runs(id) ON DELETE CASCADE,
-            step     INT NOT NULL,
-            node_id  TEXT NOT NULL,
-            head     DOUBLE PRECISION,
-            pressure DOUBLE PRECISION,
-            demand   DOUBLE PRECISION,
-            PRIMARY KEY (run_id, step, node_id)
-        )",
-        "CREATE INDEX IF NOT EXISTS node_results_run ON epanet.node_results(run_id)",
-        "CREATE TABLE IF NOT EXISTS epanet.link_results (
-            run_id    INT NOT NULL REFERENCES epanet.simulation_runs(id) ON DELETE CASCADE,
-            step      INT NOT NULL,
-            link_id   TEXT NOT NULL,
-            flow      DOUBLE PRECISION,
-            velocity  DOUBLE PRECISION,
-            headloss  DOUBLE PRECISION,
-            PRIMARY KEY (run_id, step, link_id)
-        )",
-        "CREATE INDEX IF NOT EXISTS link_results_run ON epanet.link_results(run_id)",
-    ] {
-        Spi::run(sql).unwrap();
-    }
-}
-
 /// Parses an EPANET INP file and materialises it into the `epanet` schema with PostGIS geometry.
 /// Each call creates a new network row; previous networks with the same name are not replaced.
-/// Requires `CREATE EXTENSION postgis` in the database.
+/// The `epanet` schema and tables are created by `CREATE EXTENSION pg_epanet` (PostGIS is a declared dependency).
 /// Returns the assigned `network_id`.
 #[pg_extern]
 fn epanet_import(
@@ -230,17 +92,6 @@ fn epanet_import(
     inp_text: &str,
     srid: default!(i32, "5367"),
 ) -> i32 {
-    let has_postgis = Spi::get_one::<bool>(
-        "SELECT EXISTS(SELECT 1 FROM pg_extension WHERE extname = 'postgis')",
-    )
-    .unwrap()
-    .unwrap_or(false);
-    if !has_postgis {
-        error!("PostGIS is required for epanet_import. Run: CREATE EXTENSION postgis;");
-    }
-
-    create_epanet_schema();
-
     let lit = sql_text(inp_text);
     let network_id = Spi::get_one::<i32>(&format!(
         "INSERT INTO epanet.networks(name, srid, inp_text) VALUES ({}, {srid}, {lit}) RETURNING id",
@@ -347,7 +198,7 @@ fn epanet_import(
 #[pg_extern]
 fn epanet_simulate(network_id: i32) -> i32 {
     use crate::ffi::*;
-    use std::ffi::{CStr, CString};
+    use std::ffi::{CStr, CString, c_char};
 
     // 1. Fetch the stored INP text
     let inp_text = Spi::get_one::<String>(&format!(
@@ -382,7 +233,7 @@ fn epanet_simulate(network_id: i32) -> i32 {
             EN_deleteproject(ph);
             let _ = std::fs::remove_file(&inp_path);
             let _ = std::fs::remove_file(&rpt_path);
-            let mut buf = vec![0i8; 256];
+            let mut buf = vec![0 as c_char; 256];
             EN_geterror(ec, buf.as_mut_ptr(), 255);
             let msg = CStr::from_ptr(buf.as_ptr()).to_string_lossy().into_owned();
             error!("EN_open failed (code {}): {}", ec, msg);
@@ -434,7 +285,7 @@ fn epanet_simulate(network_id: i32) -> i32 {
 
         // Collect node results for this time step
         unsafe {
-            let mut buf = vec![0i8; 64];
+            let mut buf = vec![0 as c_char; 64];
             for i in 1..=n_nodes {
                 EN_getnodeid(ph, i, buf.as_mut_ptr());
                 let mut head: f64 = 0.0;
@@ -455,7 +306,7 @@ fn epanet_simulate(network_id: i32) -> i32 {
 
         // Collect link results for this time step
         unsafe {
-            let mut buf = vec![0i8; 64];
+            let mut buf = vec![0 as c_char; 64];
             for i in 1..=n_links {
                 EN_getlinkid(ph, i, buf.as_mut_ptr());
                 let mut flow: f64 = 0.0;
@@ -744,18 +595,8 @@ mod tests {
         assert_eq!("Hello, pg_epanet", crate::hello_pg_epanet());
     }
 
-    fn postgis_available() -> bool {
-        Spi::get_one::<bool>(
-            "SELECT EXISTS(SELECT 1 FROM pg_extension WHERE extname = 'postgis')",
-        )
-        .unwrap_or(Some(false))
-        .unwrap_or(false)
-    }
-
     #[pg_test]
     fn test_epanet_import_returns_network_id_and_creates_tables() {
-        if !postgis_available() { return; }
-
         let inp = "$inp$
 [JUNCTIONS]
 J1  100.0  10.0  PD1
@@ -813,8 +654,6 @@ $inp$";
 
     #[pg_test]
     fn test_epanet_import_accumulates_versions() {
-        if !postgis_available() { return; }
-
         let inp = "'[JUNCTIONS]\nJ1  50.0\n[COORDINATES]\nJ1  10.0  20.0\n'";
         let nid1 = Spi::get_one::<i32>(
             &format!("SELECT epanet_import('test_acum', {inp})"),
