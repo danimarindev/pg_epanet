@@ -1,0 +1,28 @@
+# Rust / Cargo
+/target
+**/*.rs.bk
+# Cargo.lock is omitted for libraries; including it in extensions is optional
+Cargo.lock
+
+# pgrx build artifacts
+*.so
+*.dylib
+*.dll
+
+# pgrx regression test results
+tests/pg_regress/results
+tests/pg_regress/regression.diffs
+tests/pg_regress/regression.out
+
+# macOS
+.DS_Store
+
+# AI assistant context files (local only for now)
+CLAUDE.md
+.claude/
+.cursor/
+
+# IDEs
+.idea/
+.vscode/
+*.iml

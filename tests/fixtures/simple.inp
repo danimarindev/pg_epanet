@@ -1,0 +1,95 @@
+; pg_epanet test fixture — minimal synthetic network
+; 3 junctions, 1 reservoir, 1 tank, 1 pump, 1 valve, 4 pipes
+; All values are illustrative, not based on any real network.
+
+[TITLE]
+pg_epanet simple test network
+
+[JUNCTIONS]
+;ID              Elev     Demand   Pattern
+ J1              100.0    10.0     PD1
+ J2              95.0     5.0      PD1
+ J3              90.0     0.0
+
+[RESERVOIRS]
+;ID              Head     Pattern
+ R1              150.0
+
+[TANKS]
+;ID     Elev  InitLvl  MinLvl  MaxLvl  Diam  MinVol  VolCurve
+ T1     80.0   5.0      1.0    10.0    10.0   0.0
+
+[PIPES]
+;ID     Node1  Node2   Length  Diameter  Roughness  MinorLoss  Status
+ P1     J1     J2      500.0   150.0     100.0      0.0        Open
+ P2     J2     J3      300.0   100.0     100.0      0.0        Open
+ P3     J3     T1      200.0   100.0     100.0      0.5        Open
+ P4     J1     J3      800.0    80.0     100.0      0.0        Closed
+
+[PUMPS]
+;ID     Node1  Node2   Parameters
+ PU1    R1     J1      HEAD HC1
+
+[VALVES]
+;ID     Node1  Node2   Diameter  Type  Setting  MinorLoss
+ V1     J2     J3      100.0     PRV   60.0     0.0
+
+[PATTERNS]
+;ID       Multipliers
+ PD1      1.0   1.2   1.4   1.2   1.0   0.8
+
+[CURVES]
+;ID      X-Value  Y-Value
+ HC1     0.0      40.0
+ HC1     10.0     35.0
+ HC1     20.0     25.0
+ HC1     30.0     10.0
+
+[COORDINATES]
+;Node    X           Y
+ J1      100.0       200.0
+ J2      200.0       200.0
+ J3      300.0       150.0
+ R1      50.0        200.0
+ T1      350.0       100.0
+
+[VERTICES]
+;Link    X           Y
+ P4      150.0       250.0
+ P4      250.0       250.0
+
+[OPTIONS]
+ Units            LPS
+ Headloss         H-W
+ Specific Gravity 1.0
+ Viscosity        1.0
+ Trials           40
+ Accuracy         0.001
+ CHECKFREQ        2
+ MAXCHECK         10
+ DAMPLIMIT        0
+ Unbalanced       Continue 10
+ Pattern          1
+ Demand Multiplier 1.0
+ Emitter Exponent 0.5
+ Quality          None mg/L
+ Diffusivity      1.0
+ Tolerance        0.01
+
+[TIMES]
+ Duration         24:00
+ Hydraulic Timestep  1:00
+ Quality Timestep    0:05
+ Pattern Timestep    2:00
+ Pattern Start        0:00
+ Report Timestep      1:00
+ Report Start         0:00
+ Start ClockTime     12:00 am
+ Statistic           None
+
+[REPORT]
+ Status   No
+ Summary  No
+ Page     0
+
+[END]

@@ -1,0 +1,6 @@
+comment = 'pg_epanet:  Created by pgrx'
+default_version = '@CARGO_VERSION@'
+module_pathname = 'pg_epanet'
+relocatable = false
+superuser = true
+trusted = false
