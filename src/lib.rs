@@ -193,6 +193,17 @@ fn epanet_import(
     network_id
 }
 
+/// Deletes a network and all associated topology and simulation results (via CASCADE).
+/// Returns true when a row was deleted; errors if `network_id` does not exist.
+#[pg_extern]
+fn epanet_delete(network_id: i32) -> bool {
+    Spi::get_one::<bool>(&format!(
+        "DELETE FROM epanet.networks WHERE id = {network_id} RETURNING true"
+    ))
+    .unwrap_or_else(|e| error!("SPI error deleting network: {e:?}"))
+    .unwrap_or_else(|| error!("No network found with id={network_id}"))
+}
+
 /// Runs a full Extended Period Simulation (EPS) using the official OWA-EPANET 2.3 C toolkit.
 /// Results are stored in epanet.node_results and epanet.link_results. Returns the run_id.
 #[pg_extern]
@@ -669,6 +680,46 @@ $inp$";
             "SELECT count(*)::bigint FROM epanet.networks WHERE name = 'test_acum'",
         ).unwrap().unwrap();
         assert_eq!(n, 2);
+    }
+
+    #[pg_test]
+    fn test_epanet_delete_removes_network_and_topology() {
+        let inp = "'[JUNCTIONS]\nJ1  50.0\n[COORDINATES]\nJ1  10.0  20.0\n'";
+        let nid = Spi::get_one::<i32>(
+            &format!("SELECT epanet_import('test_del', {inp})"),
+        )
+        .unwrap()
+        .unwrap();
+
+        let deleted = Spi::get_one::<bool>(&format!("SELECT epanet_delete({nid})"))
+            .unwrap()
+            .unwrap();
+        assert!(deleted);
+
+        let n_net = Spi::get_one::<i64>(
+            &format!("SELECT count(*)::bigint FROM epanet.networks WHERE id = {nid}"),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(n_net, 0);
+
+        let n_j = Spi::get_one::<i64>(
+            &format!("SELECT count(*)::bigint FROM epanet.junctions WHERE network_id = {nid}"),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(n_j, 0);
+    }
+
+    #[pg_test]
+    fn test_epanet_junctions_have_gist_index() {
+        let n = Spi::get_one::<i64>(
+            "SELECT count(*)::bigint FROM pg_indexes \
+             WHERE schemaname = 'epanet' AND tablename = 'junctions' AND indexname = 'junctions_geom'",
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(n, 1);
     }
 
     #[pg_test]

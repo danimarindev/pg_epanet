@@ -1,8 +1,7 @@
 # Rust / Cargo
 /target
 **/*.rs.bk
-# Cargo.lock is omitted for libraries; including it in extensions is optional
-Cargo.lock
+# Cargo.lock is tracked for reproducible extension builds
 
 # pgrx build artifacts
 *.so

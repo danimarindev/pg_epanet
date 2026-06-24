@@ -10,8 +10,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Added
 - `epanet` schema and all catalogue/result tables created at `CREATE EXTENSION pg_epanet` time (via `extension_sql!` bootstrap).
 - PostGIS declared as an extension dependency (`requires = 'postgis'`); `CREATE EXTENSION pg_epanet CASCADE` installs it automatically.
-- Docker image (`postgis/postgis:18-3.6` base) and `docker-compose.yml` for local use.
+- Docker image (`postgres:18-trixie` + PostGIS 3 from PGDG) and `docker-compose.yml` for local use.
 - `epanet_import(name, inp_text, srid)` — parses an EPANET INP file and materialises all sections into permanent tables under the `epanet` schema.
+- `epanet_delete(network_id int) → boolean` — removes a network and all associated topology and simulation results via CASCADE.
+- GiST spatial indexes on all `geom` columns (junctions, reservoirs, tanks, pipes, pumps, valves).
 - Table-returning functions for all major INP sections: `epanet_junctions`, `epanet_reservoirs`, `epanet_tanks`, `epanet_pipes`, `epanet_pumps`, `epanet_valves`, `epanet_coordinates`, `epanet_vertices`.
 - PostGIS geometry generation:
   - Nodes (junctions, tanks, reservoirs) → `geometry(Point)` from `[COORDINATES]`.
@@ -22,7 +24,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Result tables (`epanet.simulation_runs`, `epanet.node_results`, `epanet.link_results`) created at extension install time.
 - `inp_text TEXT` column on `epanet.networks` — the original INP is stored verbatim for simulation re-use.
 - Generic INP parser (`mod inp`) — tokenises sections and fields; engine-agnostic, ready for SWMM reuse.
-- 33 unit tests (`cargo pgrx test pg18`) covering parsing edge cases: optional fields, default values, `*` as NULL, case normalisation, empty sections, etc.
+- 35 unit tests (`cargo pgrx test pg18`) covering parsing edge cases, import/delete, and spatial indexes.
 - Tested with a real 1,152-node / 1,165-pipe Costa Rica distribution network (351 KB INP, EPSG:5367), producing 97 EPS timesteps × 1,152 nodes = 111,744 result rows.
 
 ### Changed
@@ -33,4 +35,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Notes
 - When loading large INP files via psql `\COPY`, always use `ORDER BY lineno` with a `SERIAL` column — `ORDER BY ctid` does not guarantee insertion order for large files.
-- Upgrade scripts (`ALTER EXTENSION pg_epanet UPDATE`) are not yet provided. The first versioned release will include them.
+- First packaged release; future versions upgrade via `ALTER EXTENSION pg_epanet UPDATE`.
+
+---
+
+## [0.0.0] — internal
+
+Pre-release development; no packaged SQL shipped.

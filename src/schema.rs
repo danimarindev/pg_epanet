@@ -144,6 +144,13 @@ CREATE TABLE epanet.link_results (
 );
 
 CREATE INDEX link_results_run ON epanet.link_results(run_id);
+
+CREATE INDEX junctions_geom  ON epanet.junctions  USING GIST (geom);
+CREATE INDEX reservoirs_geom ON epanet.reservoirs USING GIST (geom);
+CREATE INDEX tanks_geom      ON epanet.tanks      USING GIST (geom);
+CREATE INDEX pipes_geom      ON epanet.pipes      USING GIST (geom);
+CREATE INDEX pumps_geom      ON epanet.pumps      USING GIST (geom);
+CREATE INDEX valves_geom     ON epanet.valves     USING GIST (geom);
 "#,
     name = "epanet_schema",
     bootstrap,

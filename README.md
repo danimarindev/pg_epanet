@@ -2,6 +2,8 @@
 
 PostgreSQL extension (written in Rust via [pgrx](https://github.com/pgcentralfoundation/pgrx)) that parses EPANET `.inp` water network files and materialises them as queryable SQL tables with PostGIS geometry.
 
+> **Status:** pre-release — see [Releases](https://github.com/danimarindev/pg_epanet/releases) for tagged versions.
+
 ## Why pg_epanet?
 
 Tools like WNTR or swmm-api parse an INP file into Python objects in memory. `pg_epanet` parses the INP **directly into PostgreSQL tables**: queryable with SQL, joinable with any other data, with PostGIS geometry ready to use as a GIS layer.
@@ -30,6 +32,25 @@ psql "postgresql://postgres:pg_epanet@localhost:5432/pg_epanet" -c "SELECT extna
 ```
 
 The image uses `postgres:18-trixie` with PostGIS 3 from PGDG (native arm64; the `postgis/postgis:18-3.6` tag is amd64-only). The extension is pre-installed on first database init.
+
+## Installing a release
+
+Check out a tagged version and build against your PostgreSQL installation:
+
+```bash
+git checkout v0.1.0-rc.1   # or v0.1.0
+cargo install cargo-pgrx --version '=0.19.1'
+cargo pgrx init
+cargo pgrx install --release --features pg18 --pg-config $(which pg_config)
+```
+
+Then in psql:
+
+```sql
+CREATE EXTENSION pg_epanet CASCADE;
+```
+
+Or use Docker (see above) for a ready-made PostgreSQL 18 + PostGIS + pg_epanet stack.
 
 ## Quick start
 
@@ -90,6 +111,14 @@ epanet_simulate(network_id int) → int
 ```
 
 Runs a full hydraulic simulation using OWA-EPANET 2.3 and stores results in `epanet.node_results` and `epanet.link_results`. Returns the `run_id`.
+
+### Delete
+
+```sql
+epanet_delete(network_id int) → boolean
+```
+
+Deletes a network row and all associated topology and simulation results (CASCADE). Errors if the id does not exist.
 
 ### Table-returning functions (parse on the fly)
 
@@ -153,4 +182,6 @@ See [CHANGELOG.md](CHANGELOG.md).
 
 ## License
 
-MIT
+`pg_epanet` is licensed under the [MIT License](LICENSE).
+
+The vendored [OWA-EPANET 2.3](vendor/epanet/) C toolkit is in the public domain — see [vendor/epanet/LICENSE](vendor/epanet/LICENSE).

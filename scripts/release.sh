@@ -75,8 +75,8 @@ grep -q "^version = \"${VERSION}\"" Cargo.toml || die "failed to update version 
 
 info "generating ${SQL_FILE}"
 mkdir -p sql
-cargo pgrx schema pg18 --no-default-features --out "${SQL_FILE}" 2>/dev/null \
-    || { cargo pgrx schema pg18 --no-default-features > "${SQL_FILE}"; }
+cargo pgrx schema pg18 --features pg18 --no-default-features --out "${SQL_FILE}" 2>/dev/null \
+    || { cargo pgrx schema pg18 --features pg18 --no-default-features > "${SQL_FILE}"; }
 
 echo "     $(wc -l < "$SQL_FILE") lines written"
 
@@ -149,14 +149,14 @@ PYEOF
 # ── 5. run tests ─────────────────────────────────────────────────────────────
 
 info "running test suite"
-cargo pgrx test pg18 --no-default-features 2>&1 \
+cargo pgrx test pg18 --features pg18 --no-default-features 2>&1 \
     | tail -5 \
     || die "tests failed — aborting release"
 
 # ── 6. commit and tag ────────────────────────────────────────────────────────
 
 info "staging files"
-git add Cargo.toml Cargo.lock sql/ CHANGELOG.md
+git add Cargo.toml Cargo.lock sql/ CHANGELOG.md pg_epanet.control
 
 info "committing"
 COMMIT_MSG="chore: release ${TAG}"

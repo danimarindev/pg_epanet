@@ -1,4 +1,4 @@
-comment = 'pg_epanet:  Created by pgrx'
+comment = 'EPANET INP parser with PostGIS geometry and hydraulic simulation'
 default_version = '@CARGO_VERSION@'
 module_pathname = 'pg_epanet'
 relocatable = false
