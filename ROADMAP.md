@@ -8,11 +8,11 @@ High-level plan for `pg_epanet`. Items within each milestone are roughly ordered
 
 **Goal:** make `epanet_simulate` production-ready with full Extended Period Simulation support.
 
-- [ ] **EPS multi-timestep** — replace the current single-step solve with the `EN_openH / EN_runH / EN_nextH / EN_closeH` loop; store results per timestep in `node_results.step` and `link_results.step`.
-- [ ] **Update `simulation_runs.n_steps`** with the actual number of timesteps solved.
+- [x] **EPS multi-timestep** — replace the current single-step solve with the `EN_openH / EN_runH / EN_nextH / EN_closeH` loop; store results per timestep in `node_results.step` and `link_results.step`.
+- [x] **Update `simulation_runs.n_steps`** with the actual number of timesteps solved.
 - [ ] **Simulation warnings** — surface EPANET warning codes (e.g. unbalanced network, negative pressures) as PostgreSQL `WARNING` messages rather than silently ignoring them.
-- [ ] **`epanet_delete(network_id int)`** — convenience function to remove a network and all its results via CASCADE.
-- [ ] GiST spatial indexes on all `geom` columns (currently missing; important for large networks).
+- [x] **`epanet_delete(network_id int)`** — convenience function to remove a network and all its results via CASCADE.
+- [x] GiST spatial indexes on all `geom` columns (important for large networks).
 
 ---
 
