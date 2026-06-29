@@ -32,9 +32,9 @@ flowchart TB
     v01[v0.1.0 Topology + EPS]
     v02[v0.2.0 Metadata INP]
     v021[v0.2.1 Indexes + docs]
+    v03[v0.3 Water quality]
   end
   subgraph epanet_core [EPANET focus]
-    v03[v0.3 Water quality]
     v04[v0.4 Round-trip + production]
     v05[v0.5 Scenarios + resilience]
     v06[v0.6 Operational integration]
@@ -43,11 +43,11 @@ flowchart TB
   subgraph horizon [Much later]
     swmm[SWMM stormwater]
   end
-  done --> v03 --> v04 --> v05 --> v06 --> v07
+  done --> v04 --> v05 --> v06 --> v07
   v07 -.->|"post-v0.5, post-v0.7"| swmm
 ```
 
-**Recommended order:** v0.3 → v0.4 → v0.5 → v0.6 → v0.7 → SWMM (horizon).
+**Recommended order:** v0.4 → v0.5 → v0.6 → v0.7 → SWMM (horizon).
 
 ---
 
@@ -110,14 +110,16 @@ flowchart TB
 
 **Deliverables:**
 
-- [ ] FFI bindings: `EN_openQ`, `EN_initQ`, `EN_runQ`, `EN_nextQ`, `EN_closeQ` in `src/ffi.rs`
-- [ ] `epanet_simulate_quality(network_id, run_id)` — WQ on top of an existing hydraulic run
-- [ ] `epanet.node_quality_results` — concentration / water age / trace per node per timestep
-- [ ] `epanet.link_quality_results` — average quality per link per timestep
-- [ ] Indexes on `(run_id)` and `(run_id, step)` — same pattern as hydraulic result tables
-- [ ] SQL helpers (views or functions): min/max chlorine by zone, % nodes below threshold, mean water age by DMA (when node mapping exists)
+- [x] FFI bindings: `EN_openQ`, `EN_initQ`, `EN_runQ`, `EN_nextQ`, `EN_closeQ` in `src/ffi.rs`
+- [x] `epanet_simulate_quality(network_id, run_id)` — WQ on top of an existing hydraulic run
+- [x] `epanet.node_quality_results` — concentration / water age / trace per node per timestep
+- [x] `epanet.link_quality_results` — average quality per link per timestep
+- [x] Indexes on `(run_id)` and `(run_id, step)` — same pattern as hydraulic result tables
+- [x] SQL helpers (views or functions): min/max chlorine by zone, % nodes below threshold, mean water age by DMA (when node mapping exists)
 
 **Depends on:** metadata sections `[SOURCES]`, `[REACTIONS]`, `[QUALITY]` imported in v0.2.0.
+
+**Note:** Zone/DMA aggregates require node mapping (v0.6); v0.3 ships `node_quality_envelope` view and `epanet_count_nodes_below_threshold`.
 
 ---
 
@@ -251,6 +253,6 @@ Not scheduled into a semver milestone. Candidates for future prioritisation base
 
 ## How to contribute
 
-Pick an unchecked item from the next open milestone (currently **v0.3**). Open an issue or PR referencing the milestone. For larger industry features (v0.6 digital twin, v0.5 scenarios), start with a design issue before implementation.
+Pick an unchecked item from the next open milestone (currently **v0.4**). Open an issue or PR referencing the milestone. For larger industry features (v0.6 digital twin, v0.5 scenarios), start with a design issue before implementation.
 
 See [README.md](README.md) for current API and [CHANGELOG.md](CHANGELOG.md) for release history.

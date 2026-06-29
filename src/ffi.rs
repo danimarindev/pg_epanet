@@ -18,11 +18,13 @@ pub const EN_LINKCOUNT: i32 = 2;
 pub const EN_DEMAND:   i32 = 9;
 pub const EN_HEAD:     i32 = 10;
 pub const EN_PRESSURE: i32 = 11;
+pub const EN_QUALITY:  i32 = 12;
 
 // EN_LinkProperty
 pub const EN_FLOW:     i32 = 8;
 pub const EN_VELOCITY: i32 = 9;
 pub const EN_HEADLOSS: i32 = 10;
+pub const EN_LINKQUAL: i32 = 14;
 
 extern "C" {
     pub fn EN_createproject(ph: *mut EN_Project) -> i32;
@@ -45,6 +47,13 @@ extern "C" {
     pub fn EN_runH(ph: EN_Project, current_time: *mut i64) -> i32;
     pub fn EN_nextH(ph: EN_Project, t_step: *mut i64) -> i32;
     pub fn EN_closeH(ph: EN_Project) -> i32;
+
+    // Extended Period Simulation (EPS) water quality loop.
+    pub fn EN_openQ(ph: EN_Project) -> i32;
+    pub fn EN_initQ(ph: EN_Project, init_flag: i32) -> i32;
+    pub fn EN_runQ(ph: EN_Project, current_time: *mut i64) -> i32;
+    pub fn EN_nextQ(ph: EN_Project, t_step: *mut i64) -> i32;
+    pub fn EN_closeQ(ph: EN_Project) -> i32;
 
     pub fn EN_getcount(ph: EN_Project, obj: i32, count: *mut i32) -> i32;
     pub fn EN_geterror(errcode: i32, errmsg: *mut c_char, max_len: i32) -> i32;
