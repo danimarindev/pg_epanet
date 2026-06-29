@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] — 2026-06-29
+
+### Added
+- FFI bindings for EPANET water quality EPS: `EN_openQ`, `EN_initQ`, `EN_runQ`, `EN_nextQ`, `EN_closeQ`.
+- `epanet_simulate_quality(network_id, run_id)` — runs water quality EPS for an existing hydraulic run; stores results in `epanet.node_quality_results` and `epanet.link_quality_results`.
+- `epanet.node_quality_results` — concentration / water age / trace per node per timestep.
+- `epanet.link_quality_results` — average link quality per timestep.
+- Indexes on `(run_id)` and `(run_id, step)` for quality result tables.
+- View `epanet.node_quality_envelope` — min/max/avg quality per node per run.
+- `epanet_count_nodes_below_threshold(run_id, threshold)` — count nodes whose minimum quality falls below a threshold.
+- 2 new `#[pg_test]` cases for quality schema and simulation.
+
 ## [0.2.1] — 2026-06-25
 
 ### Added
@@ -64,7 +76,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - When loading large INP files via psql `\COPY`, always use `ORDER BY lineno` with a `SERIAL` column — `ORDER BY ctid` does not guarantee insertion order for large files.
 - First packaged release; future versions upgrade via `ALTER EXTENSION pg_epanet UPDATE`.
 
-[unreleased]: https://github.com/danimarindev/pg_epanet/compare/v0.2.1...main
+[unreleased]: https://github.com/danimarindev/pg_epanet/compare/v0.3.0...main
+[0.3.0]: https://github.com/danimarindev/pg_epanet/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/danimarindev/pg_epanet/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/danimarindev/pg_epanet/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/danimarindev/pg_epanet/releases/tag/v0.1.0

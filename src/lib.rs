@@ -407,6 +407,298 @@ fn epanet_simulate(network_id: i32) -> i32 {
     run_id
 }
 
+fn epanet_error_message(ec: i32) -> String {
+    use crate::ffi::*;
+    use std::ffi::{CStr, c_char};
+    unsafe {
+        let mut buf = vec![0 as c_char; 256];
+        EN_geterror(ec, buf.as_mut_ptr(), 255);
+        CStr::from_ptr(buf.as_ptr())
+            .to_string_lossy()
+            .into_owned()
+    }
+}
+
+fn format_epanet_f64(v: f64) -> String {
+    if v.is_finite() {
+        format!("{v}")
+    } else {
+        "NULL".into()
+    }
+}
+
+fn quality_analysis_enabled(network_id: i32) -> bool {
+    let value = Spi::get_one::<String>(&format!(
+        "SELECT value FROM epanet.options \
+         WHERE network_id = {network_id} AND lower(key) = 'quality'"
+    ))
+    .ok()
+    .flatten();
+
+    match value {
+        Some(v) => {
+            let lower = v.to_lowercase();
+            !lower.starts_with("none") && lower != "0"
+        }
+        None => false,
+    }
+}
+
+/// Runs water quality EPS for an existing hydraulic simulation run.
+/// Re-runs the hydraulic solver interleaved with quality routing, then stores
+/// per-timestep results in epanet.node_quality_results and epanet.link_quality_results.
+/// Returns the same run_id. Requires [OPTIONS] Quality to be other than NONE.
+#[pg_extern]
+fn epanet_simulate_quality(network_id: i32, run_id: i32) -> i32 {
+    use crate::ffi::*;
+    use std::ffi::{CStr, CString, c_char};
+
+    let (run_network_id, expected_steps) = Spi::get_two::<i32, i32>(&format!(
+        "SELECT network_id, n_steps FROM epanet.simulation_runs WHERE id = {run_id}"
+    ))
+    .unwrap_or_else(|e| error!("SPI error loading simulation run: {e:?}"));
+
+    let run_network_id = run_network_id
+        .unwrap_or_else(|| error!("No simulation run found with id={run_id}"));
+    if run_network_id != network_id {
+        error!(
+            "run_id={run_id} belongs to network_id={run_network_id}, not {network_id}"
+        );
+    }
+    let expected_steps = expected_steps.unwrap_or(0);
+
+    if !quality_analysis_enabled(network_id) {
+        error!(
+            "Network {network_id} has Quality=NONE (or no Quality option); \
+             set [OPTIONS] Quality to CHEMICAL, AGE, or TRACE in the INP"
+        );
+    }
+
+    let inp_text = Spi::get_one::<String>(&format!(
+        "SELECT inp_text FROM epanet.networks WHERE id = {network_id}"
+    ))
+    .unwrap()
+    .unwrap_or_else(|| error!("No network found with id={network_id}"));
+
+    let inp_path = format!("/tmp/pg_epanet_{network_id}_wq_{run_id}.inp");
+    let rpt_path = format!("/tmp/pg_epanet_{network_id}_wq_{run_id}.rpt");
+    let out_path = format!("/tmp/pg_epanet_{network_id}_wq_{run_id}.out");
+    std::fs::write(&inp_path, &inp_text)
+        .unwrap_or_else(|e| error!("Cannot write temp file: {e}"));
+
+    let c_inp = CString::new(inp_path.as_str()).unwrap();
+    let c_rpt = CString::new(rpt_path.as_str()).unwrap();
+    let c_out = CString::new(out_path.as_str()).unwrap();
+
+    let ph = unsafe {
+        let mut ph: EN_Project = std::ptr::null_mut();
+        let ec = EN_createproject(&mut ph);
+        if ec != 0 {
+            let _ = std::fs::remove_file(&inp_path);
+            error!("EN_createproject failed (code {ec})");
+        }
+        let ec = EN_open(ph, c_inp.as_ptr(), c_rpt.as_ptr(), c_out.as_ptr());
+        if ec != 0 && ec != 200 {
+            EN_deleteproject(ph);
+            let _ = std::fs::remove_file(&inp_path);
+            let _ = std::fs::remove_file(&rpt_path);
+            error!(
+                "EN_open failed (code {ec}): {}",
+                epanet_error_message(ec)
+            );
+        }
+        ph
+    };
+
+    let (n_nodes, n_links) = unsafe {
+        let mut nn: i32 = 0;
+        let mut nl: i32 = 0;
+        EN_getcount(ph, EN_NODECOUNT, &mut nn);
+        EN_getcount(ph, EN_LINKCOUNT, &mut nl);
+        (nn, nl)
+    };
+
+    let open_h_ec = unsafe { EN_openH(ph) };
+    if open_h_ec >= 100 {
+        unsafe {
+            EN_close(ph);
+            EN_deleteproject(ph);
+        }
+        let _ = std::fs::remove_file(&inp_path);
+        let _ = std::fs::remove_file(&rpt_path);
+        let _ = std::fs::remove_file(&out_path);
+        error!("EN_openH failed (code {open_h_ec})");
+    }
+    unsafe { EN_initH(ph, EN_NOSAVE) };
+
+    let open_q_ec = unsafe { EN_openQ(ph) };
+    if open_q_ec >= 100 {
+        unsafe {
+            EN_closeH(ph);
+            EN_close(ph);
+            EN_deleteproject(ph);
+        }
+        let _ = std::fs::remove_file(&inp_path);
+        let _ = std::fs::remove_file(&rpt_path);
+        let _ = std::fs::remove_file(&out_path);
+        error!("EN_openQ failed (code {open_q_ec})");
+    }
+    unsafe { EN_initQ(ph, EN_NOSAVE) };
+
+    let mut node_parts: Vec<String> = Vec::new();
+    let mut link_parts: Vec<String> = Vec::new();
+    let mut n_steps: i32 = 0;
+
+    loop {
+        let mut current_time: i64 = 0;
+        let ec_h = unsafe { EN_runH(ph, &mut current_time) };
+        if ec_h >= 100 {
+            unsafe {
+                EN_closeQ(ph);
+                EN_closeH(ph);
+                EN_close(ph);
+                EN_deleteproject(ph);
+            }
+            let _ = std::fs::remove_file(&inp_path);
+            let _ = std::fs::remove_file(&rpt_path);
+            let _ = std::fs::remove_file(&out_path);
+            error!("EN_runH failed (code {ec_h}) at t={current_time}s");
+        }
+        if (1..100).contains(&ec_h) {
+            warning!(
+                "epanet: hydraulic warning {} at t={}s: {}",
+                ec_h,
+                current_time,
+                epanet_error_message(ec_h)
+            );
+        }
+
+        let ec_q = unsafe { EN_runQ(ph, &mut current_time) };
+        if ec_q >= 100 {
+            unsafe {
+                EN_closeQ(ph);
+                EN_closeH(ph);
+                EN_close(ph);
+                EN_deleteproject(ph);
+            }
+            let _ = std::fs::remove_file(&inp_path);
+            let _ = std::fs::remove_file(&rpt_path);
+            let _ = std::fs::remove_file(&out_path);
+            error!("EN_runQ failed (code {ec_q}) at t={current_time}s");
+        }
+        if (1..100).contains(&ec_q) {
+            warning!(
+                "epanet: quality warning {} at t={}s: {}",
+                ec_q,
+                current_time,
+                epanet_error_message(ec_q)
+            );
+        }
+
+        let step = n_steps;
+
+        unsafe {
+            let mut buf = vec![0 as c_char; 64];
+            for i in 1..=n_nodes {
+                EN_getnodeid(ph, i, buf.as_mut_ptr());
+                let mut quality: f64 = 0.0;
+                EN_getnodevalue(ph, i, EN_QUALITY, &mut quality);
+                let name = CStr::from_ptr(buf.as_ptr())
+                    .to_string_lossy()
+                    .replace('\'', "''");
+                node_parts.push(format!("{step},'{name}',{}", format_epanet_f64(quality)));
+            }
+        }
+
+        unsafe {
+            let mut buf = vec![0 as c_char; 64];
+            for i in 1..=n_links {
+                EN_getlinkid(ph, i, buf.as_mut_ptr());
+                let mut quality: f64 = 0.0;
+                EN_getlinkvalue(ph, i, EN_LINKQUAL, &mut quality);
+                let name = CStr::from_ptr(buf.as_ptr())
+                    .to_string_lossy()
+                    .replace('\'', "''");
+                link_parts.push(format!("{step},'{name}',{}", format_epanet_f64(quality)));
+            }
+        }
+
+        n_steps += 1;
+
+        let mut tstep_h: i64 = 0;
+        unsafe { EN_nextH(ph, &mut tstep_h) };
+        let mut _tstep_q: i64 = 0;
+        unsafe { EN_nextQ(ph, &mut _tstep_q) };
+        if tstep_h <= 0 {
+            break;
+        }
+    }
+
+    unsafe {
+        EN_closeQ(ph);
+        EN_closeH(ph);
+        EN_close(ph);
+        EN_deleteproject(ph);
+    }
+    let _ = std::fs::remove_file(&inp_path);
+    let _ = std::fs::remove_file(&rpt_path);
+    let _ = std::fs::remove_file(&out_path);
+
+    if expected_steps > 0 && n_steps != expected_steps {
+        warning!(
+            "epanet: quality run produced {n_steps} steps, hydraulic run had {expected_steps}"
+        );
+    }
+
+    Spi::run(&format!(
+        "DELETE FROM epanet.node_quality_results WHERE run_id = {run_id}"
+    ))
+    .ok();
+    Spi::run(&format!(
+        "DELETE FROM epanet.link_quality_results WHERE run_id = {run_id}"
+    ))
+    .ok();
+
+    if !node_parts.is_empty() {
+        let vals: String = node_parts
+            .iter()
+            .map(|r| format!("({run_id},{r})"))
+            .collect::<Vec<_>>()
+            .join(",");
+        Spi::run(&format!(
+            "INSERT INTO epanet.node_quality_results(run_id,step,node_id,quality) \
+             VALUES {vals}"
+        ))
+        .unwrap_or_else(|e| error!("SPI error inserting node_quality_results: {e:?}"));
+    }
+
+    if !link_parts.is_empty() {
+        let vals: String = link_parts
+            .iter()
+            .map(|r| format!("({run_id},{r})"))
+            .collect::<Vec<_>>()
+            .join(",");
+        Spi::run(&format!(
+            "INSERT INTO epanet.link_quality_results(run_id,step,link_id,quality) \
+             VALUES {vals}"
+        ))
+        .unwrap_or_else(|e| error!("SPI error inserting link_quality_results: {e:?}"));
+    }
+
+    run_id
+}
+
+/// Returns the number of nodes whose minimum quality across all timesteps is below `threshold`.
+#[pg_extern]
+fn epanet_count_nodes_below_threshold(run_id: i32, threshold: f64) -> i64 {
+    Spi::get_one::<i64>(&format!(
+        "SELECT count(*)::bigint FROM epanet.node_quality_envelope \
+         WHERE run_id = {run_id} AND min_quality < {threshold}"
+    ))
+    .unwrap_or_else(|e| error!("SPI error counting nodes below threshold: {e:?}"))
+    .unwrap_or(0)
+}
+
 /// Returns rows from the [JUNCTIONS] section of an INP file.
 /// demand defaults to 0.0 when absent; pattern is NULL when absent.
 #[pg_extern]
@@ -1195,6 +1487,98 @@ PRIORITY 1
         .unwrap()
         .unwrap();
         assert_eq!(rules, 1);
+
+        let _ = Spi::get_one::<bool>(&format!("SELECT epanet_delete({nid})")).unwrap();
+    }
+
+    #[pg_test]
+    fn test_quality_results_schema() {
+        for (table, index) in [
+            ("node_quality_results", "node_quality_results_run"),
+            ("node_quality_results", "node_quality_results_run_step"),
+            ("link_quality_results", "link_quality_results_run"),
+            ("link_quality_results", "link_quality_results_run_step"),
+        ] {
+            let n = Spi::get_one::<i64>(&format!(
+                "SELECT count(*)::bigint FROM pg_indexes \
+                 WHERE schemaname = 'epanet' AND tablename = '{table}' AND indexname = '{index}'"
+            ))
+            .unwrap()
+            .unwrap();
+            assert_eq!(n, 1, "missing index {index} on {table}");
+        }
+
+        let view_exists = Spi::get_one::<i64>(
+            "SELECT count(*)::bigint FROM pg_views \
+             WHERE schemaname = 'epanet' AND viewname = 'node_quality_envelope'",
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(view_exists, 1);
+    }
+
+    #[pg_test]
+    fn test_epanet_simulate_quality() {
+        let inp = r#"[JUNCTIONS]
+J1 100.0 10.0
+J2 90.0 0.0
+[RESERVOIRS]
+R1 150.0
+[PIPES]
+P1 J1 J2 100.0 200.0 100.0
+[COORDINATES]
+J1 0.0 0.0
+J2 100.0 0.0
+R1 0.0 100.0
+[QUALITY]
+J1 1.0
+R1 1.0
+[OPTIONS]
+Units LPS
+Headloss H-W
+Quality Chemical mg/L
+[TIMES]
+Duration 1:00
+Hydraulic Timestep 1:00
+Report Timestep 1:00
+"#;
+        let nid = Spi::get_one::<i32>(&format!(
+            "SELECT epanet_import('wq_test', $${inp}$$, 4326)"
+        ))
+        .unwrap()
+        .unwrap();
+
+        let run_id = Spi::get_one::<i32>(&format!("SELECT epanet_simulate({nid})"))
+            .unwrap()
+            .unwrap();
+        assert!(run_id > 0);
+
+        let quality_run_id =
+            Spi::get_one::<i32>(&format!("SELECT epanet_simulate_quality({nid}, {run_id})"))
+                .unwrap()
+                .unwrap();
+        assert_eq!(quality_run_id, run_id);
+
+        let node_rows = Spi::get_one::<i64>(&format!(
+            "SELECT count(*)::bigint FROM epanet.node_quality_results WHERE run_id = {run_id}"
+        ))
+        .unwrap()
+        .unwrap();
+        assert!(node_rows > 0);
+
+        let link_rows = Spi::get_one::<i64>(&format!(
+            "SELECT count(*)::bigint FROM epanet.link_quality_results WHERE run_id = {run_id}"
+        ))
+        .unwrap()
+        .unwrap();
+        assert!(link_rows > 0);
+
+        let below = Spi::get_one::<i64>(&format!(
+            "SELECT epanet_count_nodes_below_threshold({run_id}, 9999.0)"
+        ))
+        .unwrap()
+        .unwrap();
+        assert!(below >= 0);
 
         let _ = Spi::get_one::<bool>(&format!("SELECT epanet_delete({nid})")).unwrap();
     }

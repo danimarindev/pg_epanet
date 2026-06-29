@@ -2,7 +2,7 @@
 
 PostgreSQL extension (written in Rust via [pgrx](https://github.com/pgcentralfoundation/pgrx)) that parses EPANET `.inp` water network files and materialises them as queryable SQL tables with PostGIS geometry.
 
-> **Status:** [v0.2.1](https://github.com/danimarindev/pg_epanet/releases/tag/v0.2.1) released — see [CHANGELOG.md](CHANGELOG.md) for details.
+> **Status:** v0.3.0 in development on `main` — [v0.2.1](https://github.com/danimarindev/pg_epanet/releases/tag/v0.2.1) is the latest release. See [CHANGELOG.md](CHANGELOG.md).
 
 ## Why pg_epanet?
 
@@ -15,6 +15,7 @@ For users who already store infrastructure data in PostGIS this eliminates the i
 - **Import** an EPANET INP into permanent tables with a single function call
 - **PostGIS geometry** — nodes as `Point`, pipes as `LineString` (with ordered `[VERTICES]`), pumps/valves as direct links
 - **Hydraulic EPS simulation** via the official OWA-EPANET 2.3 C toolkit (statically linked — no external install)
+- **Water quality EPS** — `epanet_simulate_quality` stores per-timestep node/link quality on an existing hydraulic run
 - **Per-timestep results** stored in `node_results` and `link_results` (`step` column, full Extended Period Simulation)
 - **Schema bootstrap** — all tables, indexes, and views created at `CREATE EXTENSION pg_epanet`
 - **Delete** networks and all associated data with `epanet_delete`
@@ -272,7 +273,10 @@ WHERE network_id = 1;
 -- 4. Run a hydraulic simulation (EPS — all timesteps)
 SELECT epanet_simulate(1) AS run_id;
 
--- 5. Inspect results (filter by timestep if needed)
+-- 5b. Water quality (requires Quality ≠ NONE in INP; run hydraulic first)
+SELECT epanet_simulate_quality(1, 1);
+
+-- 6. Inspect results (filter by timestep if needed)
 SELECT step, node_id, round(pressure::numeric, 2) AS pressure_m
 FROM epanet.node_results
 WHERE run_id = 1
@@ -310,6 +314,20 @@ epanet_simulate(network_id int) → int
 ```
 
 Runs a full Extended Period Simulation (EPS) using OWA-EPANET 2.3. Stores per-timestep results in `epanet.node_results` (head, pressure, demand) and `epanet.link_results` (flow, velocity, headloss). Returns the `run_id`. Fatal solver errors (code ≥ 100) abort the simulation; warning codes 1–99 are emitted as PostgreSQL `WARNING` messages (with timestep and EPANET error text).
+
+### Water quality simulation
+
+```sql
+epanet_simulate_quality(network_id int, run_id int) → int
+```
+
+Runs water quality EPS for an existing hydraulic run (`run_id` from `epanet_simulate`). Re-runs hydraulics interleaved with quality routing, then stores results in `epanet.node_quality_results` and `epanet.link_quality_results`. Returns the same `run_id`. Requires `[OPTIONS] Quality` to be `CHEMICAL`, `AGE`, or `TRACE` (not `NONE`).
+
+```sql
+epanet_count_nodes_below_threshold(run_id int, threshold float8) → bigint
+```
+
+Counts nodes whose minimum quality across all timesteps falls below `threshold` (uses `epanet.node_quality_envelope`).
 
 ### Delete
 
@@ -371,6 +389,9 @@ Created at `CREATE EXTENSION pg_epanet`:
 - `simulation_runs` — one row per simulation run (`n_steps` = timesteps solved); indexed on `network_id`
 - `node_results` — head, pressure, demand per node per `step` (PK: `run_id`, `step`, `node_id`)
 - `link_results` — flow, velocity, headloss per link per `step`
+- `node_quality_results` — quality (concentration, age, or trace) per node per `step`
+- `link_quality_results` — average link quality per `step`
+- `node_quality_envelope` — view with min/max/avg quality per node per run
 
 See [Performance & indexes](#performance--indexes) for the full index list and query tips.
 
