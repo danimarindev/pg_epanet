@@ -1,6 +1,6 @@
 [package]
 name = "pg_epanet"
-version = "0.6.1"
+version = "0.6.2"
 edition = "2021"
 description = "PostgreSQL extension: EPANET INP parser with PostGIS geometry and hydraulic simulation"
 license = "MIT"

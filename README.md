@@ -367,6 +367,41 @@ SELECT epanet_simulate(network_id);
 
 Also available: `epanet_add_tank`, `epanet_add_valve`, `epanet_add_demand`, `epanet_add_control`, `epanet_add_rule`, `epanet_add_vertex`, and other metadata setters.
 
+### Map editing (PostGIS-native UI)
+
+**Unified layers for rendering:**
+
+```sql
+SELECT node_id, node_type, geom FROM epanet.nodes WHERE network_id = $1;
+SELECT link_id, link_type, node1, node2, geom FROM epanet.links WHERE network_id = $1;
+```
+
+**Move nodes (cascades to connected pipes/pumps/valves):**
+
+```sql
+SELECT epanet_set_node_coordinates(network_id, 'J1', 120.0, 45.0);
+-- or PostGIS-native:
+SELECT epanet_set_node_geom(network_id, 'J1', ST_SetSRID(ST_MakePoint(120, 45), 4326));
+```
+
+**Add from geometry (map draw tools):**
+
+```sql
+SELECT epanet_add_junction_geom(network_id, 'J1', 100.0, 10.0, ST_MakePoint(100, 0), NULL);
+SELECT epanet_add_pipe_geom(network_id, 'P1', 'R1', 'J1',
+  ST_MakeLine(ARRAY[ST_MakePoint(0,0), ST_MakePoint(50,50), ST_MakePoint(100,0)]),
+  100.0, 200.0, 100.0);
+```
+
+**Scenario map preview (base + provisional overlay):**
+
+```sql
+SELECT node_id, node_type, provisional, geom FROM epanet_scenario_nodes(scenario_id);
+SELECT link_id, link_type, provisional, geom FROM epanet_scenario_links(scenario_id);
+SELECT epanet_set_scenario_node_geom(scenario_id, 'J2', ST_MakePoint(110, 10));
+SELECT epanet_add_scenario_vertex(scenario_id, 'P2', 55.0, 25.0);
+```
+
 ### Topology editing
 
 ```sql

@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.2] — 2026-06-29
+
+### Added
+- **`epanet.links`** view — unified pipes/pumps/valves with `link_type` and `geom`.
+- **Map editing:** `epanet_set_node_coordinates`, `epanet_set_node_geom` — move nodes and cascade link geometry refresh.
+- **Geometry-native adds:** `epanet_add_junction_geom`, `epanet_add_reservoir_geom`, `epanet_add_tank_geom`, `epanet_add_pipe_geom` (PostGIS `geometry` args).
+- **Pipe shape:** `epanet_apply_pipe_shape(network_id, pipe, wkt)` — LineString → vertices + geom.
+- **Scenario map layer:** `scenario_elements.geom` column; `epanet_scenario_nodes(scenario_id)`, `epanet_scenario_links(scenario_id)` for map preview with provisional flag.
+- **Scenario editing:** `epanet_set_scenario_node_coordinates`, `epanet_set_scenario_node_geom`, `epanet_add_scenario_vertex`, `epanet_refresh_scenario_geoms`.
+- Helper `epanet.effective_node_xy(scenario_id, node_id)` for overlay coordinate resolution.
+- Module `src/map.rs`; migration `sql/pg_epanet--0.6.1--0.6.2.sql`.
+- 3 new `#[pg_test]` cases for move-node, links view, and scenario map geometry.
+
 ## [0.6.1] — 2026-06-29
 
 ### Added

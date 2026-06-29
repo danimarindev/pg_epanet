@@ -66,7 +66,7 @@ fn node_exists_for_scenario(scenario_id: i32, network_id: i32, name: &str) -> bo
     .unwrap_or(false)
 }
 
-fn update_point_geom(table: &str, network_id: i32, name: &str, srid: i32) {
+pub(crate) fn update_point_geom(table: &str, network_id: i32, name: &str, srid: i32) {
     Spi::run(&format!(
         "UPDATE epanet.{table} t \
          SET geom = ST_SetSRID(ST_MakePoint(c.x, c.y), {srid}) \
@@ -90,7 +90,7 @@ fn update_tank_geom(network_id: i32, name: &str, srid: i32) {
     update_point_geom("tanks", network_id, name, srid);
 }
 
-fn update_direct_link_geom(table: &str, network_id: i32, name: &str, srid: i32) {
+pub(crate) fn update_direct_link_geom(table: &str, network_id: i32, name: &str, srid: i32) {
     Spi::run(&format!(
         "UPDATE epanet.{table} l \
          SET geom = ST_SetSRID(ST_MakeLine(ST_MakePoint(c1.x, c1.y), ST_MakePoint(c2.x, c2.y)), {srid}) \
@@ -103,7 +103,7 @@ fn update_direct_link_geom(table: &str, network_id: i32, name: &str, srid: i32) 
     .unwrap_or_else(|e| error!("SPI error updating {table} geometry: {e:?}"));
 }
 
-fn update_pipe_geom(network_id: i32, name: &str, srid: i32) {
+pub(crate) fn update_pipe_geom(network_id: i32, name: &str, srid: i32) {
     Spi::run(&format!(
         "UPDATE epanet.pipes p \
          SET geom = ST_SetSRID( \
@@ -348,9 +348,10 @@ pub fn add_scenario_junction(
         Some(p) => format!("{elevation} {demand} {p}"),
         None => format!("{elevation} {demand}"),
     };
+    let srid = network_srid(network_id);
     Spi::run(&format!(
-        "INSERT INTO epanet.scenario_elements(scenario_id, element_type, name, inp_fields, coord_x, coord_y) \
-         VALUES ({scenario_id}, 'junction', {}, {}, {x}, {y})",
+        "INSERT INTO epanet.scenario_elements(scenario_id, element_type, name, inp_fields, coord_x, coord_y, geom) \
+         VALUES ({scenario_id}, 'junction', {}, {}, {x}, {y}, ST_SetSRID(ST_MakePoint({x}, {y}), {srid}))",
         sql_text(name),
         sql_text(&fields)
     ))
@@ -386,6 +387,7 @@ pub fn add_scenario_pipe(
         sql_text(&fields)
     ))
     .unwrap_or_else(|e| error!("SPI error inserting scenario pipe: {e:?}"));
+    refresh_scenario_link_geom(scenario_id, name);
 }
 
 /// Adds a provisional reservoir visible only in scenario simulations.
@@ -397,14 +399,15 @@ pub fn add_scenario_reservoir(
     y: f64,
     pattern: Option<&str>,
 ) {
-    let _ = assert_scenario(scenario_id);
+    let network_id = assert_scenario(scenario_id);
+    let srid = network_srid(network_id);
     let fields = match pattern {
         Some(p) => format!("{head} {p}"),
         None => format!("{head}"),
     };
     Spi::run(&format!(
-        "INSERT INTO epanet.scenario_elements(scenario_id, element_type, name, inp_fields, coord_x, coord_y) \
-         VALUES ({scenario_id}, 'reservoir', {}, {}, {x}, {y})",
+        "INSERT INTO epanet.scenario_elements(scenario_id, element_type, name, inp_fields, coord_x, coord_y, geom) \
+         VALUES ({scenario_id}, 'reservoir', {}, {}, {x}, {y}, ST_SetSRID(ST_MakePoint({x}, {y}), {srid}))",
         sql_text(name),
         sql_text(&fields)
     ))
@@ -427,7 +430,8 @@ pub fn add_scenario_tank(
     volume_curve: Option<&str>,
     overflow: Option<&str>,
 ) {
-    let _ = assert_scenario(scenario_id);
+    let network_id = assert_scenario(scenario_id);
+    let srid = network_srid(network_id);
     let mut fields = format!(
         "{elevation} {init_level} {min_level} {max_level} {diameter} {min_volume}"
     );
@@ -440,8 +444,8 @@ pub fn add_scenario_tank(
         fields.push_str(o);
     }
     Spi::run(&format!(
-        "INSERT INTO epanet.scenario_elements(scenario_id, element_type, name, inp_fields, coord_x, coord_y) \
-         VALUES ({scenario_id}, 'tank', {}, {}, {x}, {y})",
+        "INSERT INTO epanet.scenario_elements(scenario_id, element_type, name, inp_fields, coord_x, coord_y, geom) \
+         VALUES ({scenario_id}, 'tank', {}, {}, {x}, {y}, ST_SetSRID(ST_MakePoint({x}, {y}), {srid}))",
         sql_text(name),
         sql_text(&fields)
     ))
@@ -498,6 +502,7 @@ pub fn add_scenario_pump(
         sql_text(&fields)
     ))
     .unwrap_or_else(|e| error!("SPI error inserting scenario pump: {e:?}"));
+    refresh_scenario_link_geom(scenario_id, name);
 }
 
 /// Adds a provisional valve visible only in scenario simulations.
@@ -528,6 +533,130 @@ pub fn add_scenario_valve(
         sql_text(&fields)
     ))
     .unwrap_or_else(|e| error!("SPI error inserting scenario valve: {e:?}"));
+    refresh_scenario_link_geom(scenario_id, name);
+}
+
+pub fn refresh_scenario_link_geom(scenario_id: i32, link_name: &str) {
+    let network_id = assert_scenario(scenario_id);
+    let srid = network_srid(network_id);
+    let lit = sql_text(link_name);
+
+    Spi::run(&format!(
+        "UPDATE epanet.scenario_elements se \
+         SET geom = ST_SetSRID( \
+             ST_MakeLine( \
+                 ARRAY(SELECT ST_MakePoint(n1.x, n1.y) \
+                       FROM epanet.effective_node_xy({scenario_id}, split_part(se.inp_fields, ' ', 1)) n1) \
+                 || ARRAY(SELECT ST_MakePoint(v.x, v.y) \
+                          FROM epanet.scenario_element_vertices v \
+                          WHERE v.scenario_id = {scenario_id} AND v.link_id = se.name \
+                          ORDER BY v.idx) \
+                 || ARRAY(SELECT ST_MakePoint(n2.x, n2.y) \
+                       FROM epanet.effective_node_xy({scenario_id}, split_part(se.inp_fields, ' ', 2)) n2) \
+             ), {srid}) \
+         WHERE se.scenario_id = {scenario_id} AND se.name = {lit} \
+           AND se.element_type IN ('pipe', 'pump', 'valve')"
+    ))
+    .unwrap_or_else(|e| error!("SPI error refreshing scenario link geom: {e:?}"));
+    let _ = network_id;
+}
+
+fn refresh_scenario_links_at_node(scenario_id: i32, node_id: &str) {
+    let lit = sql_text(node_id);
+    let mut links: Vec<String> = Vec::new();
+    let _ = Spi::connect(|client| -> SpiResult<_> {
+        let rows = client.select(
+            &format!(
+                "SELECT name FROM epanet.scenario_elements \
+                 WHERE scenario_id = {scenario_id} \
+                   AND element_type IN ('pipe', 'pump', 'valve') \
+                   AND (split_part(inp_fields, ' ', 1) = {lit} \
+                        OR split_part(inp_fields, ' ', 2) = {lit})"
+            ),
+            None,
+            None,
+        )?;
+        for row in rows {
+            links.push(row.get_by_name("name")?.unwrap());
+        }
+        Ok(())
+    });
+    for name in links {
+        refresh_scenario_link_geom(scenario_id, &name);
+    }
+}
+
+pub fn set_scenario_node_coordinates(scenario_id: i32, node_id: &str, x: f64, y: f64) {
+    let network_id = assert_scenario(scenario_id);
+    let srid = network_srid(network_id);
+
+    let updated = Spi::get_one::<bool>(&format!(
+        "UPDATE epanet.scenario_elements \
+         SET coord_x = {x}, coord_y = {y}, \
+             geom = ST_SetSRID(ST_MakePoint({x}, {y}), {srid}) \
+         WHERE scenario_id = {scenario_id} AND name = {} \
+           AND element_type IN ('junction', 'reservoir', 'tank') \
+         RETURNING true",
+        sql_text(node_id)
+    ))
+    .unwrap_or_else(|e| error!("SPI error updating scenario node: {e:?}"))
+    .unwrap_or(false);
+
+    if !updated {
+        error!("scenario node '{node_id}' not found in scenario {scenario_id}");
+    }
+
+    refresh_scenario_links_at_node(scenario_id, node_id);
+    let _ = network_id;
+}
+
+pub fn add_scenario_vertex(scenario_id: i32, link_id: &str, x: f64, y: f64) {
+    let _ = assert_scenario(scenario_id);
+    Spi::run(&format!(
+        "INSERT INTO epanet.scenario_element_vertices(scenario_id, link_id, idx, x, y) \
+         VALUES ({scenario_id}, {}, \
+         (SELECT COALESCE(MAX(idx), -1) + 1 FROM epanet.scenario_element_vertices \
+          WHERE scenario_id = {scenario_id} AND link_id = {}), {x}, {y})",
+        sql_text(link_id),
+        sql_text(link_id)
+    ))
+    .unwrap_or_else(|e| error!("SPI error inserting scenario vertex: {e:?}"));
+    refresh_scenario_link_geom(scenario_id, link_id);
+}
+
+pub fn refresh_scenario_geoms(scenario_id: i32) {
+    let network_id = assert_scenario(scenario_id);
+    let srid = network_srid(network_id);
+
+    Spi::run(&format!(
+        "UPDATE epanet.scenario_elements \
+         SET geom = ST_SetSRID(ST_MakePoint(coord_x, coord_y), {srid}) \
+         WHERE scenario_id = {scenario_id} \
+           AND element_type IN ('junction', 'reservoir', 'tank') \
+           AND coord_x IS NOT NULL AND coord_y IS NOT NULL"
+    ))
+    .ok();
+
+    let mut links: Vec<String> = Vec::new();
+    let _ = Spi::connect(|client| -> SpiResult<_> {
+        let rows = client.select(
+            &format!(
+                "SELECT name FROM epanet.scenario_elements \
+                 WHERE scenario_id = {scenario_id} \
+                   AND element_type IN ('pipe', 'pump', 'valve')"
+            ),
+            None,
+            None,
+        )?;
+        for row in rows {
+            links.push(row.get_by_name("name")?.unwrap());
+        }
+        Ok(())
+    });
+    for name in links {
+        refresh_scenario_link_geom(scenario_id, &name);
+    }
+    let _ = network_id;
 }
 
 pub fn remove_element(network_id: i32, element_type: &str, name: &str) -> bool {
