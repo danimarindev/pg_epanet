@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] — 2026-06-29
+
+### Added
+- **`epanet.scenario_elements`** and **`epanet.scenario_element_vertices`** — provisional topology visible only in scenario simulations.
+- **Base network editing:** `epanet_add_junction`, `epanet_add_pipe`, `epanet_remove_element`, `epanet_connect_nodes`.
+- **Scenario topology:** `epanet_add_scenario_junction`, `epanet_add_scenario_pipe`, `epanet_remove_scenario_element`.
+- **`epanet_merge_scenario_into_base(scenario_id)`** — promotes scenario elements + overrides into base tables and refreshes INP.
+- Scenario overlay engine applies provisional elements to effective INP at simulate time.
+- Module `src/topology.rs`; migration `sql/pg_epanet--0.5.0--0.6.0.sql`.
+- 2 new `#[pg_test]` cases for base and scenario topology.
+
 ## [0.5.0] — 2026-06-29
 
 ### Added
@@ -108,7 +119,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - When loading large INP files via psql `\COPY`, always use `ORDER BY lineno` with a `SERIAL` column — `ORDER BY ctid` does not guarantee insertion order for large files.
 - First packaged release; future versions upgrade via `ALTER EXTENSION pg_epanet UPDATE`.
 
-[unreleased]: https://github.com/danimarindev/pg_epanet/compare/v0.5.0...main
+[unreleased]: https://github.com/danimarindev/pg_epanet/compare/v0.6.0...main
+[0.6.0]: https://github.com/danimarindev/pg_epanet/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/danimarindev/pg_epanet/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/danimarindev/pg_epanet/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/danimarindev/pg_epanet/compare/v0.2.1...v0.3.0

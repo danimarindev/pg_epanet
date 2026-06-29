@@ -49,7 +49,12 @@ pub fn load_scenario(scenario_id: i32) -> (i32, f64, Vec<Override>) {
 }
 
 /// Applies scenario overrides to a base INP string (in memory only — base network is unchanged).
-pub fn apply_scenario(base_inp: &str, demand_multiplier: f64, overrides: &[Override]) -> String {
+pub fn apply_scenario(
+    base_inp: &str,
+    demand_multiplier: f64,
+    overrides: &[Override],
+    scenario_id: Option<i32>,
+) -> String {
     let mut sections = inp::parse_sections(base_inp);
 
     if (demand_multiplier - 1.0).abs() > f64::EPSILON {
@@ -60,7 +65,79 @@ pub fn apply_scenario(base_inp: &str, demand_multiplier: f64, overrides: &[Overr
         apply_override(&mut sections, ov);
     }
 
+    if let Some(sid) = scenario_id {
+        apply_scenario_elements(&mut sections, sid);
+    }
+
     inp::render_sections(&sections)
+}
+
+fn apply_scenario_elements(sections: &mut HashMap<String, Vec<Vec<String>>>, scenario_id: i32) {
+    let _ = Spi::connect(|client| -> SpiResult<_> {
+        let rows = client.select(
+            &format!(
+                "SELECT element_type, name, inp_fields, coord_x, coord_y \
+                 FROM epanet.scenario_elements WHERE scenario_id = {scenario_id} \
+                 ORDER BY element_type, name"
+            ),
+            None,
+            None,
+        )?;
+        for row in rows {
+            let etype: String = row.get_by_name("element_type")?.unwrap();
+            let name: String = row.get_by_name("name")?.unwrap();
+            let fields_str: String = row.get_by_name("inp_fields")?.unwrap();
+            let cx: Option<f64> = row.get_by_name("coord_x")?;
+            let cy: Option<f64> = row.get_by_name("coord_y")?;
+
+            let section = match etype.as_str() {
+                "junction" => "JUNCTIONS",
+                "pipe" => "PIPES",
+                "pump" => "PUMPS",
+                "valve" => "VALVES",
+                "tank" => "TANKS",
+                "reservoir" => "RESERVOIRS",
+                other => {
+                    warning!("epanet: unknown scenario element type '{other}'");
+                    continue;
+                }
+            };
+
+            let fields: Vec<String> = std::iter::once(name.clone())
+                .chain(fields_str.split_whitespace().map(str::to_owned))
+                .collect();
+            sections.entry(section.into()).or_default().push(fields);
+
+            if let (Some(x), Some(y)) = (cx, cy) {
+                sections
+                    .entry("COORDINATES".into())
+                    .or_default()
+                    .push(vec![name, format!("{x}"), format!("{y}")]);
+            }
+        }
+        Ok(())
+    });
+
+    let _ = Spi::connect(|client| -> SpiResult<_> {
+        let rows = client.select(
+            &format!(
+                "SELECT link_id, x, y FROM epanet.scenario_element_vertices \
+                 WHERE scenario_id = {scenario_id} ORDER BY link_id, idx"
+            ),
+            None,
+            None,
+        )?;
+        for row in rows {
+            let link_id: String = row.get_by_name("link_id")?.unwrap();
+            let x: f64 = row.get_by_name("x")?.unwrap();
+            let y: f64 = row.get_by_name("y")?.unwrap();
+            sections
+                .entry("VERTICES".into())
+                .or_default()
+                .push(vec![link_id, format!("{x}"), format!("{y}")]);
+        }
+        Ok(())
+    });
 }
 
 fn apply_global_demand_multiplier(sections: &mut HashMap<String, Vec<Vec<String>>>, mult: f64) {
@@ -297,7 +374,7 @@ pub fn effective_inp_for_scenario(scenario_id: i32) -> (i32, String) {
     ))
     .unwrap()
     .unwrap_or_else(|| error!("No network found for scenario {scenario_id}"));
-    let inp = apply_scenario(&base, demand_multiplier, &overrides);
+    let inp = apply_scenario(&base, demand_multiplier, &overrides, Some(scenario_id));
     (network_id, inp)
 }
 
@@ -326,6 +403,7 @@ Demand Multiplier 1.0
                 parameter: "demand".into(),
                 value: "999".into(),
             }],
+            None,
         );
         assert!(out.contains("999"));
         assert!(!BASE.contains("999"));
@@ -342,13 +420,14 @@ Demand Multiplier 1.0
                 parameter: "status".into(),
                 value: "Closed".into(),
             }],
+            None,
         );
         assert!(out.contains("Closed"));
     }
 
     #[test]
     fn global_demand_multiplier() {
-        let out = apply_scenario(BASE, 2.0, &[]);
+        let out = apply_scenario(BASE, 2.0, &[], None);
         assert!(out.contains("20") || out.contains("20.0"));
     }
 }

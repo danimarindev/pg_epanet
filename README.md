@@ -2,7 +2,7 @@
 
 PostgreSQL extension (written in Rust via [pgrx](https://github.com/pgcentralfoundation/pgrx)) that parses EPANET `.inp` water network files and materialises them as queryable SQL tables with PostGIS geometry.
 
-> **Status:** v0.5.0 in development — see [CHANGELOG.md](CHANGELOG.md).
+> **Status:** v0.6.0 — see [CHANGELOG.md](CHANGELOG.md).
 
 ## Why pg_epanet?
 
@@ -347,6 +347,23 @@ epanet_scenario_fire_flow(network_id, name, junction_id, required_flow) → int
 ```
 
 Override `target_type` values: `junction`, `pipe`, `pump`, `valve`, `option`, `status`, `demand`, `emitter`. Parameters include `demand`, `status`, `roughness`, `roughness_factor`, `speed`, `setting`, etc.
+
+### Topology editing
+
+```sql
+-- Provisional (scenario-only — base INP unchanged)
+SELECT epanet_add_scenario_junction(scenario_id, 'J9', 100.0, 5.0, 200.0, 50.0);
+SELECT epanet_add_scenario_pipe(scenario_id, 'P9', 'J9', 'J1', 80.0, 150.0, 100.0);
+SELECT epanet_simulate_scenario(scenario_id);
+
+-- Permanent (base tables — call epanet_refresh_inp to sync INP text)
+SELECT epanet_add_junction(network_id, 'J9', 100.0, 5.0, 200.0, 50.0);
+SELECT epanet_add_pipe(network_id, 'P9', 'J9', 'J1', 80.0, 150.0, 100.0);
+SELECT epanet_refresh_inp(network_id);
+
+-- Promote scenario to base
+SELECT epanet_merge_scenario_into_base(scenario_id);
+```
 
 ### Simulation
 
