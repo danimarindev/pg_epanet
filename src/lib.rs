@@ -1,9 +1,11 @@
 use pgrx::prelude::*;
 
+mod builder;
 mod epanet_sections;
 mod export;
 mod ffi;
 mod inp;
+mod map;
 mod metadata;
 mod scenario;
 mod schema;
@@ -636,6 +638,12 @@ fn epanet_compare_runs(
     TableIterator::new(rows.into_iter())
 }
 
+/// Creates an empty network with default OPTIONS/TIMES/REPORT. Add elements, then `epanet_refresh_inp`.
+#[pg_extern]
+fn epanet_create_network(network_name: &str, srid: default!(i32, "4326")) -> i32 {
+    builder::create_network(network_name, srid)
+}
+
 /// Adds a junction to the base network tables (call `epanet_refresh_inp` to update INP text).
 #[pg_extern]
 fn epanet_add_junction(
@@ -666,6 +674,98 @@ fn epanet_add_pipe(
 ) -> bool {
     topology::add_pipe(
         network_id, name, node1, node2, length, diameter, roughness, minor_loss, status,
+    );
+    true
+}
+
+/// Adds a reservoir to the base network tables.
+#[pg_extern]
+fn epanet_add_reservoir(
+    network_id: i32,
+    name: &str,
+    head: f64,
+    x: f64,
+    y: f64,
+    pattern: default!(Option<&str>, NULL),
+) -> bool {
+    topology::add_reservoir(network_id, name, head, x, y, pattern);
+    true
+}
+
+/// Adds a tank to the base network tables.
+#[pg_extern]
+fn epanet_add_tank(
+    network_id: i32,
+    name: &str,
+    elevation: f64,
+    init_level: f64,
+    min_level: f64,
+    max_level: f64,
+    diameter: f64,
+    min_volume: default!(f64, 0.0),
+    x: f64,
+    y: f64,
+    volume_curve: default!(Option<&str>, NULL),
+    overflow: default!(Option<&str>, NULL),
+) -> bool {
+    topology::add_tank(
+        network_id,
+        name,
+        elevation,
+        init_level,
+        min_level,
+        max_level,
+        diameter,
+        min_volume,
+        x,
+        y,
+        volume_curve,
+        overflow,
+    );
+    true
+}
+
+/// Adds a pump to the base network tables. `pump_type` is `HEAD` or `POWER`.
+#[pg_extern]
+fn epanet_add_pump(
+    network_id: i32,
+    name: &str,
+    node1: &str,
+    node2: &str,
+    pump_type: &str,
+    head_curve: default!(Option<&str>, NULL),
+    power: default!(Option<f64>, NULL),
+    speed: default!(Option<f64>, NULL),
+    pattern: default!(Option<&str>, NULL),
+) -> bool {
+    topology::add_pump(
+        network_id,
+        name,
+        node1,
+        node2,
+        pump_type,
+        head_curve,
+        power,
+        speed,
+        pattern,
+    );
+    true
+}
+
+/// Adds a valve to the base network tables.
+#[pg_extern]
+fn epanet_add_valve(
+    network_id: i32,
+    name: &str,
+    node1: &str,
+    node2: &str,
+    diameter: f64,
+    valve_type: &str,
+    setting: &str,
+    minor_loss: default!(f64, 0.0),
+) -> bool {
+    topology::add_valve(
+        network_id, name, node1, node2, diameter, valve_type, setting, minor_loss,
     );
     true
 }
@@ -704,6 +804,105 @@ fn epanet_add_scenario_pipe(
     true
 }
 
+/// Adds a provisional reservoir that exists only in scenario simulations.
+#[pg_extern]
+fn epanet_add_scenario_reservoir(
+    scenario_id: i32,
+    name: &str,
+    head: f64,
+    x: f64,
+    y: f64,
+    pattern: default!(Option<&str>, NULL),
+) -> bool {
+    topology::add_scenario_reservoir(scenario_id, name, head, x, y, pattern);
+    true
+}
+
+/// Adds a provisional tank that exists only in scenario simulations.
+#[pg_extern]
+fn epanet_add_scenario_tank(
+    scenario_id: i32,
+    name: &str,
+    elevation: f64,
+    init_level: f64,
+    min_level: f64,
+    max_level: f64,
+    diameter: f64,
+    min_volume: default!(f64, 0.0),
+    x: f64,
+    y: f64,
+    volume_curve: default!(Option<&str>, NULL),
+    overflow: default!(Option<&str>, NULL),
+) -> bool {
+    topology::add_scenario_tank(
+        scenario_id,
+        name,
+        elevation,
+        init_level,
+        min_level,
+        max_level,
+        diameter,
+        min_volume,
+        x,
+        y,
+        volume_curve,
+        overflow,
+    );
+    true
+}
+
+/// Adds a provisional pump that exists only in scenario simulations.
+#[pg_extern]
+fn epanet_add_scenario_pump(
+    scenario_id: i32,
+    name: &str,
+    node1: &str,
+    node2: &str,
+    pump_type: &str,
+    head_curve: default!(Option<&str>, NULL),
+    power: default!(Option<f64>, NULL),
+    speed: default!(Option<f64>, NULL),
+    pattern: default!(Option<&str>, NULL),
+) -> bool {
+    topology::add_scenario_pump(
+        scenario_id,
+        name,
+        node1,
+        node2,
+        pump_type,
+        head_curve,
+        power,
+        speed,
+        pattern,
+    );
+    true
+}
+
+/// Adds a provisional valve that exists only in scenario simulations.
+#[pg_extern]
+fn epanet_add_scenario_valve(
+    scenario_id: i32,
+    name: &str,
+    node1: &str,
+    node2: &str,
+    diameter: f64,
+    valve_type: &str,
+    setting: &str,
+    minor_loss: default!(f64, 0.0),
+) -> bool {
+    topology::add_scenario_valve(
+        scenario_id,
+        name,
+        node1,
+        node2,
+        diameter,
+        valve_type,
+        setting,
+        minor_loss,
+    );
+    true
+}
+
 #[pg_extern]
 fn epanet_remove_element(network_id: i32, element_type: &str, name: &str) -> bool {
     topology::remove_element(network_id, element_type, name)
@@ -729,6 +928,149 @@ fn epanet_connect_nodes(
 #[pg_extern]
 fn epanet_merge_scenario_into_base(scenario_id: i32) -> i32 {
     topology::merge_scenario_into_base(scenario_id)
+}
+
+/// Adds or replaces a demand pattern (whitespace-separated multipliers).
+#[pg_extern]
+fn epanet_add_pattern(network_id: i32, pattern_id: &str, multipliers: &str) -> bool {
+    builder::add_pattern(network_id, pattern_id, multipliers);
+    true
+}
+
+/// Adds or replaces a curve from whitespace-separated x y pairs.
+#[pg_extern]
+fn epanet_add_curve(network_id: i32, curve_id: &str, xy_pairs: &str) -> bool {
+    builder::add_curve(network_id, curve_id, xy_pairs);
+    true
+}
+
+#[pg_extern]
+fn epanet_set_option(network_id: i32, key: &str, value: &str) -> bool {
+    builder::set_option(network_id, key, value);
+    true
+}
+
+#[pg_extern]
+fn epanet_set_times(network_id: i32, key: &str, value: &str) -> bool {
+    builder::set_times(network_id, key, value);
+    true
+}
+
+#[pg_extern]
+fn epanet_set_report(network_id: i32, key: &str, value: &str) -> bool {
+    builder::set_report(network_id, key, value);
+    true
+}
+
+#[pg_extern]
+fn epanet_set_reactions(network_id: i32, key: &str, value: &str) -> bool {
+    builder::set_reactions(network_id, key, value);
+    true
+}
+
+#[pg_extern]
+fn epanet_set_quality(network_id: i32, key: &str, value: &str) -> bool {
+    builder::set_quality(network_id, key, value);
+    true
+}
+
+#[pg_extern]
+fn epanet_set_energy(network_id: i32, key: &str, value: &str) -> bool {
+    builder::set_energy(network_id, key, value);
+    true
+}
+
+#[pg_extern]
+fn epanet_add_control(network_id: i32, rule_text: &str) -> bool {
+    builder::add_control(network_id, rule_text);
+    true
+}
+
+#[pg_extern]
+fn epanet_add_rule(network_id: i32, rule_id: &str, rule_text: &str) -> bool {
+    builder::add_rule(network_id, rule_id, rule_text);
+    true
+}
+
+#[pg_extern]
+fn epanet_add_demand(
+    network_id: i32,
+    junction_id: &str,
+    demand: f64,
+    pattern: default!(Option<&str>, NULL),
+) -> bool {
+    builder::add_demand(network_id, junction_id, demand, pattern);
+    true
+}
+
+#[pg_extern]
+fn epanet_add_emitter(network_id: i32, junction_id: &str, coefficient: f64) -> bool {
+    builder::add_emitter(network_id, junction_id, coefficient);
+    true
+}
+
+#[pg_extern]
+fn epanet_set_link_status(network_id: i32, link_id: &str, status_value: &str) -> bool {
+    builder::set_link_status(network_id, link_id, status_value);
+    true
+}
+
+#[pg_extern]
+fn epanet_add_source(
+    network_id: i32,
+    node_id: &str,
+    source_type: &str,
+    quality: f64,
+    pattern: default!(Option<&str>, NULL),
+) -> bool {
+    builder::add_source(network_id, node_id, source_type, quality, pattern);
+    true
+}
+
+#[pg_extern]
+fn epanet_add_vertex(network_id: i32, link_id: &str, x: f64, y: f64) -> bool {
+    builder::add_vertex(network_id, link_id, x, y);
+    true
+}
+
+/// Moves a base-network node and refreshes all connected link geometry.
+#[pg_extern]
+fn epanet_set_node_coordinates(network_id: i32, node_id: &str, x: f64, y: f64) -> bool {
+    map::set_node_coordinates(network_id, node_id, x, y);
+    true
+}
+
+/// Moves a provisional scenario node and refreshes scenario link geometry.
+#[pg_extern]
+fn epanet_set_scenario_node_coordinates(
+    scenario_id: i32,
+    node_id: &str,
+    x: f64,
+    y: f64,
+) -> bool {
+    topology::set_scenario_node_coordinates(scenario_id, node_id, x, y);
+    true
+}
+
+/// Adds a bend vertex to a provisional scenario link.
+#[pg_extern]
+fn epanet_add_scenario_vertex(scenario_id: i32, link_id: &str, x: f64, y: f64) -> bool {
+    topology::add_scenario_vertex(scenario_id, link_id, x, y);
+    true
+}
+
+/// Recomputes stored geometry for all provisional elements in a scenario.
+#[pg_extern]
+fn epanet_refresh_scenario_geoms(scenario_id: i32) -> bool {
+    topology::refresh_scenario_geoms(scenario_id);
+    true
+}
+
+/// Applies a WKT LineString to an existing pipe (interior points become vertices).
+#[pg_extern]
+fn epanet_apply_pipe_shape(network_id: i32, pipe_name: &str, wkt: &str) -> bool {
+    map::apply_pipe_linestring(network_id, pipe_name, wkt);
+    true
 }
 
 /// Deletes a network and all associated topology and simulation results (via CASCADE).
@@ -1216,6 +1558,213 @@ fn epanet_valves(
         Some((name, node1, node2, diameter, valve_type, setting, minor_loss))
     }))
 }
+
+extension_sql!(
+    r#"
+CREATE OR REPLACE FUNCTION epanet.effective_node_xy(p_scenario_id int, p_node_id text)
+RETURNS TABLE(x float8, y float8)
+LANGUAGE sql STABLE AS $$
+    SELECT COALESCE(se.coord_x, c.x) AS x, COALESCE(se.coord_y, c.y) AS y
+    FROM epanet.scenarios s
+    LEFT JOIN epanet.scenario_elements se
+      ON se.scenario_id = s.id AND se.name = p_node_id
+     AND se.element_type IN ('junction', 'reservoir', 'tank')
+    LEFT JOIN epanet.coordinates c
+      ON c.network_id = s.network_id AND c.node_id = p_node_id
+    WHERE s.id = p_scenario_id
+      AND COALESCE(se.coord_x, c.x) IS NOT NULL
+$$;
+
+CREATE OR REPLACE FUNCTION epanet_scenario_nodes(p_scenario_id int)
+RETURNS TABLE(
+    node_id text,
+    node_type text,
+    provisional boolean,
+    geom geometry
+)
+LANGUAGE sql STABLE AS $$
+    WITH s AS (SELECT network_id FROM epanet.scenarios WHERE id = p_scenario_id)
+    SELECT n.node_id, n.node_type, false AS provisional, n.geom
+    FROM epanet.nodes n, s
+    WHERE n.network_id = s.network_id
+      AND NOT EXISTS (
+          SELECT 1 FROM epanet.scenario_elements se
+          WHERE se.scenario_id = p_scenario_id AND se.name = n.node_id
+            AND se.element_type IN ('junction', 'reservoir', 'tank')
+      )
+    UNION ALL
+    SELECT se.name,
+           se.element_type,
+           true,
+           COALESCE(se.geom, ST_SetSRID(ST_MakePoint(se.coord_x, se.coord_y), net.srid))
+    FROM epanet.scenario_elements se
+    JOIN epanet.scenarios sc ON sc.id = se.scenario_id
+    JOIN epanet.networks net ON net.id = sc.network_id
+    WHERE se.scenario_id = p_scenario_id
+      AND se.element_type IN ('junction', 'reservoir', 'tank')
+$$;
+
+CREATE OR REPLACE FUNCTION epanet_scenario_links(p_scenario_id int)
+RETURNS TABLE(
+    link_id text,
+    link_type text,
+    node1 text,
+    node2 text,
+    provisional boolean,
+    geom geometry
+)
+LANGUAGE sql STABLE AS $$
+    WITH s AS (SELECT network_id FROM epanet.scenarios WHERE id = p_scenario_id)
+    SELECT l.link_id, l.link_type, l.node1, l.node2, false, l.geom
+    FROM epanet.links l, s
+    WHERE l.network_id = s.network_id
+      AND NOT EXISTS (
+          SELECT 1 FROM epanet.scenario_elements se
+          WHERE se.scenario_id = p_scenario_id AND se.name = l.link_id
+            AND se.element_type IN ('pipe', 'pump', 'valve')
+      )
+    UNION ALL
+    SELECT se.name,
+           se.element_type,
+           split_part(se.inp_fields, ' ', 1),
+           split_part(se.inp_fields, ' ', 2),
+           true,
+           se.geom
+    FROM epanet.scenario_elements se
+    WHERE se.scenario_id = p_scenario_id
+      AND se.element_type IN ('pipe', 'pump', 'valve')
+$$;
+
+CREATE OR REPLACE FUNCTION epanet_set_node_geom(
+    p_network_id int, p_node_id text, p_geom geometry
+) RETURNS boolean
+LANGUAGE plpgsql AS $$
+DECLARE
+    v_srid int;
+    v_g geometry;
+BEGIN
+    SELECT srid INTO v_srid FROM epanet.networks WHERE id = p_network_id;
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'No network found with id=%', p_network_id;
+    END IF;
+    v_g := ST_Transform(
+        CASE WHEN ST_SRID(p_geom) = 0 THEN ST_SetSRID(p_geom, v_srid) ELSE p_geom END,
+        v_srid
+    );
+    IF ST_GeometryType(v_g) NOT IN ('ST_Point', 'ST_MultiPoint') THEN
+        RAISE EXCEPTION 'Expected Point geometry, got %', ST_GeometryType(v_g);
+    END IF;
+    IF ST_GeometryType(v_g) = 'ST_MultiPoint' THEN
+        v_g := ST_GeometryN(v_g, 1);
+    END IF;
+    RETURN epanet_set_node_coordinates(p_network_id, p_node_id, ST_X(v_g), ST_Y(v_g));
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION epanet_add_junction_geom(
+    p_network_id int, p_name text, p_elevation float8, p_demand float8,
+    p_geom geometry, p_pattern text DEFAULT NULL
+) RETURNS boolean
+LANGUAGE plpgsql AS $$
+DECLARE v_g geometry; v_srid int;
+BEGIN
+    SELECT srid INTO v_srid FROM epanet.networks WHERE id = p_network_id;
+    v_g := ST_Transform(
+        CASE WHEN ST_SRID(p_geom) = 0 THEN ST_SetSRID(p_geom, v_srid) ELSE p_geom END, v_srid);
+    IF ST_GeometryType(v_g) = 'ST_MultiPoint' THEN v_g := ST_GeometryN(v_g, 1); END IF;
+    RETURN epanet_add_junction(p_network_id, p_name, p_elevation, p_demand, ST_X(v_g), ST_Y(v_g), p_pattern);
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION epanet_add_reservoir_geom(
+    p_network_id int, p_name text, p_head float8,
+    p_geom geometry, p_pattern text DEFAULT NULL
+) RETURNS boolean
+LANGUAGE plpgsql AS $$
+DECLARE v_g geometry; v_srid int;
+BEGIN
+    SELECT srid INTO v_srid FROM epanet.networks WHERE id = p_network_id;
+    v_g := ST_Transform(
+        CASE WHEN ST_SRID(p_geom) = 0 THEN ST_SetSRID(p_geom, v_srid) ELSE p_geom END, v_srid);
+    IF ST_GeometryType(v_g) = 'ST_MultiPoint' THEN v_g := ST_GeometryN(v_g, 1); END IF;
+    RETURN epanet_add_reservoir(p_network_id, p_name, p_head, ST_X(v_g), ST_Y(v_g), p_pattern);
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION epanet_add_tank_geom(
+    p_network_id int, p_name text,
+    p_elevation float8, p_init_level float8, p_min_level float8,
+    p_max_level float8, p_diameter float8, p_min_volume float8,
+    p_geom geometry,
+    p_volume_curve text DEFAULT NULL, p_overflow text DEFAULT NULL
+) RETURNS boolean
+LANGUAGE plpgsql AS $$
+DECLARE v_g geometry; v_srid int;
+BEGIN
+    SELECT srid INTO v_srid FROM epanet.networks WHERE id = p_network_id;
+    v_g := ST_Transform(
+        CASE WHEN ST_SRID(p_geom) = 0 THEN ST_SetSRID(p_geom, v_srid) ELSE p_geom END, v_srid);
+    IF ST_GeometryType(v_g) = 'ST_MultiPoint' THEN v_g := ST_GeometryN(v_g, 1); END IF;
+    RETURN epanet_add_tank(p_network_id, p_name, p_elevation, p_init_level, p_min_level,
+        p_max_level, p_diameter, p_min_volume, ST_X(v_g), ST_Y(v_g), p_volume_curve, p_overflow);
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION epanet_add_pipe_geom(
+    p_network_id int, p_name text, p_node1 text, p_node2 text,
+    p_geom geometry,
+    p_length float8, p_diameter float8, p_roughness float8,
+    p_minor_loss float8 DEFAULT 0, p_status text DEFAULT 'Open'
+) RETURNS boolean
+LANGUAGE plpgsql AS $$
+DECLARE v_g geometry; v_srid int;
+BEGIN
+    SELECT srid INTO v_srid FROM epanet.networks WHERE id = p_network_id;
+    v_g := ST_Transform(
+        CASE WHEN ST_SRID(p_geom) = 0 THEN ST_SetSRID(p_geom, v_srid) ELSE p_geom END, v_srid);
+    IF ST_GeometryType(v_g) NOT IN ('ST_LineString', 'ST_MultiLineString') THEN
+        RAISE EXCEPTION 'Expected LineString geometry for pipe, got %', ST_GeometryType(v_g);
+    END IF;
+    IF ST_GeometryType(v_g) = 'ST_MultiLineString' THEN
+        v_g := ST_GeometryN(v_g, 1);
+    END IF;
+    PERFORM epanet_add_pipe(p_network_id, p_name, p_node1, p_node2,
+        p_length, p_diameter, p_roughness, p_minor_loss, p_status);
+    PERFORM epanet_apply_pipe_shape(p_network_id, p_name, ST_AsText(v_g));
+    RETURN true;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION epanet_set_scenario_node_geom(
+    p_scenario_id int, p_node_id text, p_geom geometry
+) RETURNS boolean
+LANGUAGE plpgsql AS $$
+DECLARE v_g geometry; v_srid int;
+BEGIN
+    SELECT n.srid INTO v_srid
+    FROM epanet.scenarios s JOIN epanet.networks n ON n.id = s.network_id
+    WHERE s.id = p_scenario_id;
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'No scenario found with id=%', p_scenario_id;
+    END IF;
+    v_g := ST_Transform(
+        CASE WHEN ST_SRID(p_geom) = 0 THEN ST_SetSRID(p_geom, v_srid) ELSE p_geom END, v_srid);
+    IF ST_GeometryType(v_g) = 'ST_MultiPoint' THEN v_g := ST_GeometryN(v_g, 1); END IF;
+    RETURN epanet_set_scenario_node_coordinates(p_scenario_id, p_node_id, ST_X(v_g), ST_Y(v_g));
+END;
+$$;
+"#,
+    name = "map_geom_sql",
+    requires = [
+        epanet_set_node_coordinates,
+        epanet_add_junction,
+        epanet_add_reservoir,
+        epanet_add_tank,
+        epanet_add_pipe,
+        epanet_apply_pipe_shape,
+        epanet_set_scenario_node_coordinates,
+    ],
+);
 
 #[cfg(any(test, feature = "pg_test"))]
 #[pg_schema]
@@ -2233,6 +2782,177 @@ R1 0.0 100.0
         .unwrap()
         .unwrap();
         assert!(geom);
+
+        let _ = Spi::get_one::<bool>(&format!("SELECT epanet_delete({nid})")).unwrap();
+    }
+
+    #[pg_test]
+    fn test_epanet_create_network_from_scratch() {
+        let nid = Spi::get_one::<i32>(&format!(
+            "SELECT epanet_create_network('scratch_net', 4326)"
+        ))
+        .unwrap()
+        .unwrap();
+
+        Spi::run(&format!(
+            "SELECT epanet_add_reservoir({nid}, 'R1', 150.0, 0.0, 100.0, NULL)"
+        ))
+        .unwrap();
+        Spi::run(&format!(
+            "SELECT epanet_add_junction({nid}, 'J1', 100.0, 10.0, 100.0, 0.0, NULL)"
+        ))
+        .unwrap();
+        Spi::run(&format!(
+            "SELECT epanet_add_pipe({nid}, 'P1', 'R1', 'J1', 100.0, 200.0, 100.0, 0.0, 'Open')"
+        ))
+        .unwrap();
+        Spi::run(&format!(
+            "SELECT epanet_set_times({nid}, 'Duration', '1:00')"
+        ))
+        .unwrap();
+        Spi::run(&format!(
+            "SELECT epanet_set_times({nid}, 'Hydraulic Timestep', '1:00')"
+        ))
+        .unwrap();
+        Spi::run(&format!(
+            "SELECT epanet_set_times({nid}, 'Report Timestep', '1:00')"
+        ))
+        .unwrap();
+        Spi::run(&format!("SELECT epanet_refresh_inp({nid})")).unwrap();
+
+        let run_id = Spi::get_one::<i32>(&format!("SELECT epanet_simulate({nid})"))
+            .unwrap()
+            .unwrap();
+        assert!(run_id > 0);
+
+        let n_nodes = Spi::get_one::<i64>(&format!(
+            "SELECT count(*)::bigint FROM epanet.node_results WHERE run_id = {run_id}"
+        ))
+        .unwrap()
+        .unwrap();
+        assert!(n_nodes > 0);
+
+        let _ = Spi::get_one::<bool>(&format!("SELECT epanet_delete({nid})")).unwrap();
+    }
+
+    #[pg_test]
+    fn test_epanet_set_node_coordinates_cascades_links() {
+        let inp = r#"[JUNCTIONS]
+J1 100.0 10.0
+J2 90.0 0.0
+[RESERVOIRS]
+R1 150.0
+[PIPES]
+P1 J1 J2 100.0 200.0 100.0
+[COORDINATES]
+J1 0.0 0.0
+J2 100.0 0.0
+R1 0.0 100.0
+"#;
+        let nid = Spi::get_one::<i32>(&format!(
+            "SELECT epanet_import('move_test', $${inp}$$, 4326)"
+        ))
+        .unwrap()
+        .unwrap();
+
+        Spi::run(&format!(
+            "SELECT epanet_set_node_coordinates({nid}, 'J2', 200.0, 0.0)"
+        ))
+        .unwrap();
+
+        let x = Spi::get_one::<f64>(&format!(
+            "SELECT x FROM epanet.coordinates WHERE network_id = {nid} AND node_id = 'J2'"
+        ))
+        .unwrap()
+        .unwrap();
+        assert!((x - 200.0).abs() < 1e-6);
+
+        let pipe_ok = Spi::get_one::<bool>(&format!(
+            "SELECT ST_NPoints(geom) >= 2 FROM epanet.pipes WHERE network_id = {nid} AND name = 'P1'"
+        ))
+        .unwrap()
+        .unwrap();
+        assert!(pipe_ok);
+
+        let _ = Spi::get_one::<bool>(&format!("SELECT epanet_delete({nid})")).unwrap();
+    }
+
+    #[pg_test]
+    fn test_epanet_links_view() {
+        let nid = Spi::get_one::<i32>(&format!(
+            "SELECT epanet_create_network('links_view', 4326)"
+        ))
+        .unwrap()
+        .unwrap();
+        Spi::run(&format!(
+            "SELECT epanet_add_reservoir({nid}, 'R1', 150.0, 0.0, 0.0)"
+        ))
+        .unwrap();
+        Spi::run(&format!(
+            "SELECT epanet_add_junction({nid}, 'J1', 100.0, 0.0, 100.0, 0.0)"
+        ))
+        .unwrap();
+        Spi::run(&format!(
+            "SELECT epanet_add_pipe({nid}, 'P1', 'R1', 'J1', 100.0, 200.0, 100.0)"
+        ))
+        .unwrap();
+
+        let n = Spi::get_one::<i64>(&format!(
+            "SELECT count(*)::bigint FROM epanet.links WHERE network_id = {nid}"
+        ))
+        .unwrap()
+        .unwrap();
+        assert_eq!(n, 1);
+
+        let _ = Spi::get_one::<bool>(&format!("SELECT epanet_delete({nid})")).unwrap();
+    }
+
+    #[pg_test]
+    fn test_epanet_scenario_map_geom() {
+        let inp = r#"[JUNCTIONS]
+J1 100.0 10.0
+[RESERVOIRS]
+R1 150.0
+[PIPES]
+P1 J1 R1 100.0 200.0 100.0
+[COORDINATES]
+J1 0.0 0.0
+R1 0.0 100.0
+"#;
+        let nid = Spi::get_one::<i32>(&format!(
+            "SELECT epanet_import('scn_map', $${inp}$$, 4326)"
+        ))
+        .unwrap()
+        .unwrap();
+        let sid = Spi::get_one::<i32>(&format!(
+            "SELECT epanet_create_scenario({nid}, 'ext', NULL, 1.0)"
+        ))
+        .unwrap()
+        .unwrap();
+
+        Spi::run(&format!(
+            "SELECT epanet_add_scenario_junction({sid}, 'J2', 95.0, 5.0, 100.0, 0.0, NULL)"
+        ))
+        .unwrap();
+        Spi::run(&format!(
+            "SELECT epanet_add_scenario_pipe({sid}, 'P2', 'J2', 'R1', 50.0, 150.0, 100.0, 0.0, 'Open')"
+        ))
+        .unwrap();
+
+        let has_geom = Spi::get_one::<bool>(&format!(
+            "SELECT geom IS NOT NULL FROM epanet_scenario_links({sid}) \
+             WHERE link_id = 'P2' AND provisional"
+        ))
+        .unwrap()
+        .unwrap();
+        assert!(has_geom);
+
+        let node_count = Spi::get_one::<i64>(&format!(
+            "SELECT count(*)::bigint FROM epanet_scenario_nodes({sid})"
+        ))
+        .unwrap()
+        .unwrap();
+        assert!(node_count >= 3);
 
         let _ = Spi::get_one::<bool>(&format!("SELECT epanet_delete({nid})")).unwrap();
     }

@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.2] — 2026-06-29
+
+### Added
+- **`epanet.links`** view — unified pipes/pumps/valves with `link_type` and `geom`.
+- **Map editing:** `epanet_set_node_coordinates`, `epanet_set_node_geom` — move nodes and cascade link geometry refresh.
+- **Geometry-native adds:** `epanet_add_junction_geom`, `epanet_add_reservoir_geom`, `epanet_add_tank_geom`, `epanet_add_pipe_geom` (PostGIS `geometry` args).
+- **Pipe shape:** `epanet_apply_pipe_shape(network_id, pipe, wkt)` — LineString → vertices + geom.
+- **Scenario map layer:** `scenario_elements.geom` column; `epanet_scenario_nodes(scenario_id)`, `epanet_scenario_links(scenario_id)` for map preview with provisional flag.
+- **Scenario editing:** `epanet_set_scenario_node_coordinates`, `epanet_set_scenario_node_geom`, `epanet_add_scenario_vertex`, `epanet_refresh_scenario_geoms`.
+- Helper `epanet.effective_node_xy(scenario_id, node_id)` for overlay coordinate resolution.
+- Module `src/map.rs`; migration `sql/pg_epanet--0.6.1--0.6.2.sql`.
+- 3 new `#[pg_test]` cases for move-node, links view, and scenario map geometry.
+
+## [0.6.1] — 2026-06-29
+
+### Added
+- **`epanet_create_network(name, srid)`** — empty network shell with default OPTIONS/TIMES/REPORT.
+- **Base topology:** `epanet_add_reservoir`, `epanet_add_tank`, `epanet_add_pump`, `epanet_add_valve`.
+- **Scenario topology:** `epanet_add_scenario_reservoir`, `epanet_add_scenario_tank`, `epanet_add_scenario_pump`, `epanet_add_scenario_valve`.
+- **Metadata builder:** `epanet_add_pattern`, `epanet_add_curve`, `epanet_set_option`, `epanet_set_times`, `epanet_set_report`, `epanet_set_reactions`, `epanet_set_quality`, `epanet_set_energy`, `epanet_add_control`, `epanet_add_rule`, `epanet_add_demand`, `epanet_add_emitter`, `epanet_set_link_status`, `epanet_add_source`, `epanet_add_vertex`.
+- **`epanet_merge_scenario_into_base`** now promotes reservoirs, tanks, pumps, and valves.
+- Module `src/builder.rs`; migration `sql/pg_epanet--0.6.0--0.6.1.sql`.
+- `#[pg_test]` building and simulating a network from scratch.
+
 ## [0.6.0] — 2026-06-29
 
 ### Added

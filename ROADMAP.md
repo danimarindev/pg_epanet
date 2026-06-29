@@ -177,7 +177,9 @@ flowchart TB
 
 **Follow-ups (v0.6.x / v0.7):**
 
-- [ ] `epanet_add_pump`, `epanet_add_valve`, `epanet_add_tank`, `epanet_add_reservoir` helpers
+- [x] `epanet_create_network` — build from empty INP shell (v0.6.1)
+- [x] `epanet_add_pump`, `epanet_add_valve`, `epanet_add_tank`, `epanet_add_reservoir` helpers (v0.6.1)
+- [x] Metadata builder helpers — patterns, curves, options, controls, etc. (v0.6.1)
 - [ ] `epanet_validate` extensions after topology edits
 - [ ] `epanet_export` includes scenario elements when exporting effective state
 

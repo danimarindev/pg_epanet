@@ -348,17 +348,73 @@ epanet_scenario_fire_flow(network_id, name, junction_id, required_flow) → int
 
 Override `target_type` values: `junction`, `pipe`, `pump`, `valve`, `option`, `status`, `demand`, `emitter`. Parameters include `demand`, `status`, `roughness`, `roughness_factor`, `speed`, `setting`, etc.
 
+### Build from scratch
+
+Start with an empty network (default OPTIONS/TIMES/REPORT), add elements incrementally, refresh INP, simulate:
+
+```sql
+SELECT epanet_create_network('my_net', 4326);          -- → network_id
+SELECT epanet_add_reservoir(network_id, 'R1', 150.0, 0.0, 100.0);
+SELECT epanet_add_junction(network_id, 'J1', 100.0, 10.0, 100.0, 0.0);
+SELECT epanet_add_pipe(network_id, 'P1', 'R1', 'J1', 100.0, 200.0, 100.0);
+SELECT epanet_add_pattern(network_id, 'PD1', '1.0 1.2 1.0');
+SELECT epanet_add_curve(network_id, 'HC1', '0 40 10 35 20 25');
+SELECT epanet_add_pump(network_id, 'PU1', 'R1', 'J1', 'HEAD', 'HC1');
+SELECT epanet_set_option(network_id, 'Units', 'LPS');
+SELECT epanet_refresh_inp(network_id);
+SELECT epanet_simulate(network_id);
+```
+
+Also available: `epanet_add_tank`, `epanet_add_valve`, `epanet_add_demand`, `epanet_add_control`, `epanet_add_rule`, `epanet_add_vertex`, and other metadata setters.
+
+### Map editing (PostGIS-native UI)
+
+**Unified layers for rendering:**
+
+```sql
+SELECT node_id, node_type, geom FROM epanet.nodes WHERE network_id = $1;
+SELECT link_id, link_type, node1, node2, geom FROM epanet.links WHERE network_id = $1;
+```
+
+**Move nodes (cascades to connected pipes/pumps/valves):**
+
+```sql
+SELECT epanet_set_node_coordinates(network_id, 'J1', 120.0, 45.0);
+-- or PostGIS-native:
+SELECT epanet_set_node_geom(network_id, 'J1', ST_SetSRID(ST_MakePoint(120, 45), 4326));
+```
+
+**Add from geometry (map draw tools):**
+
+```sql
+SELECT epanet_add_junction_geom(network_id, 'J1', 100.0, 10.0, ST_MakePoint(100, 0), NULL);
+SELECT epanet_add_pipe_geom(network_id, 'P1', 'R1', 'J1',
+  ST_MakeLine(ARRAY[ST_MakePoint(0,0), ST_MakePoint(50,50), ST_MakePoint(100,0)]),
+  100.0, 200.0, 100.0);
+```
+
+**Scenario map preview (base + provisional overlay):**
+
+```sql
+SELECT node_id, node_type, provisional, geom FROM epanet_scenario_nodes(scenario_id);
+SELECT link_id, link_type, provisional, geom FROM epanet_scenario_links(scenario_id);
+SELECT epanet_set_scenario_node_geom(scenario_id, 'J2', ST_MakePoint(110, 10));
+SELECT epanet_add_scenario_vertex(scenario_id, 'P2', 55.0, 25.0);
+```
+
 ### Topology editing
 
 ```sql
 -- Provisional (scenario-only — base INP unchanged)
 SELECT epanet_add_scenario_junction(scenario_id, 'J9', 100.0, 5.0, 200.0, 50.0);
 SELECT epanet_add_scenario_pipe(scenario_id, 'P9', 'J9', 'J1', 80.0, 150.0, 100.0);
+SELECT epanet_add_scenario_reservoir(scenario_id, 'R9', 150.0, 0.0, 50.0);
 SELECT epanet_simulate_scenario(scenario_id);
 
 -- Permanent (base tables — call epanet_refresh_inp to sync INP text)
 SELECT epanet_add_junction(network_id, 'J9', 100.0, 5.0, 200.0, 50.0);
 SELECT epanet_add_pipe(network_id, 'P9', 'J9', 'J1', 80.0, 150.0, 100.0);
+SELECT epanet_add_reservoir(network_id, 'R9', 150.0, 0.0, 50.0);
 SELECT epanet_refresh_inp(network_id);
 
 -- Promote scenario to base

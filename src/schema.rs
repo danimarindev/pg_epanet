@@ -114,6 +114,14 @@ CREATE VIEW epanet.nodes AS
     UNION ALL
     SELECT network_id, name, 'reservoir', head,      geom FROM epanet.reservoirs;
 
+CREATE VIEW epanet.links AS
+    SELECT network_id, name AS link_id, 'pipe'::text AS link_type, node1, node2, geom
+      FROM epanet.pipes
+    UNION ALL
+    SELECT network_id, name, 'pump',  node1, node2, geom FROM epanet.pumps
+    UNION ALL
+    SELECT network_id, name, 'valve', node1, node2, geom FROM epanet.valves;
+
 CREATE TABLE epanet.scenarios (
     id                 SERIAL PRIMARY KEY,
     network_id         INT NOT NULL REFERENCES epanet.networks(id) ON DELETE CASCADE,
@@ -144,8 +152,11 @@ CREATE TABLE epanet.scenario_elements (
     inp_fields   TEXT NOT NULL,
     coord_x      FLOAT8,
     coord_y      FLOAT8,
+    geom         geometry,
     PRIMARY KEY (scenario_id, element_type, name)
 );
+
+CREATE INDEX scenario_elements_geom ON epanet.scenario_elements USING GIST (geom);
 
 CREATE INDEX scenario_elements_scenario ON epanet.scenario_elements(scenario_id);
 
