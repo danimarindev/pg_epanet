@@ -1,12 +1,20 @@
 use pgrx::prelude::*;
 
 mod epanet_sections;
+mod export;
 mod ffi;
 mod inp;
 mod metadata;
 mod schema;
+mod temp;
+mod validate;
 
 ::pgrx::pg_module_magic!(name, version);
+
+#[pg_guard]
+unsafe extern "C-unwind" fn _PG_init() {
+    temp::register_gucs();
+}
 
 #[pg_extern]
 fn hello_pg_epanet() -> &'static str {
@@ -85,15 +93,23 @@ pub(crate) fn sql_text(s: &str) -> String {
 }
 
 /// Parses an EPANET INP file and materialises it into the `epanet` schema with PostGIS geometry.
-/// Each call creates a new network row; previous networks with the same name are not replaced.
-/// The `epanet` schema and tables are created by `CREATE EXTENSION pg_epanet` (PostGIS is a declared dependency).
+/// When `replace` is true, deletes any existing networks with the same name before importing.
 /// Returns the assigned `network_id`.
 #[pg_extern]
 fn epanet_import(
     network_name: &str,
     inp_text: &str,
     srid: default!(i32, "5367"),
+    replace: default!(bool, false),
 ) -> i32 {
+    if replace {
+        Spi::run(&format!(
+            "DELETE FROM epanet.networks WHERE name = {}",
+            sql_text(network_name)
+        ))
+        .unwrap_or_else(|e| error!("SPI error deleting existing network: {e:?}"));
+    }
+
     let lit = sql_text(inp_text);
     let network_id = Spi::get_one::<i32>(&format!(
         "INSERT INTO epanet.networks(name, srid, inp_text) VALUES ({}, {srid}, {lit}) RETURNING id",
@@ -147,16 +163,21 @@ fn epanet_import(
     }
 
     // Point geometry for nodes (junctions, tanks, reservoirs)
-    for table in ["junctions", "tanks", "reservoirs"] {
-        Spi::run(&format!(
-            "UPDATE epanet.{table} t \
-             SET geom = ST_SetSRID(ST_MakePoint(c.x, c.y), {srid}) \
-             FROM epanet.coordinates c \
-             WHERE t.network_id = c.network_id AND t.name = c.node_id \
-               AND t.network_id = {nid}"
-        ))
-        .unwrap();
-    }
+    Spi::run(&format!(
+        "UPDATE epanet.junctions t \
+         SET geom = ST_SetSRID(ST_MakePoint(c.x, c.y), {srid}) \
+         FROM epanet.coordinates c \
+         WHERE t.network_id = c.network_id AND t.name = c.node_id AND t.network_id = {nid}; \
+         UPDATE epanet.tanks t \
+         SET geom = ST_SetSRID(ST_MakePoint(c.x, c.y), {srid}) \
+         FROM epanet.coordinates c \
+         WHERE t.network_id = c.network_id AND t.name = c.node_id AND t.network_id = {nid}; \
+         UPDATE epanet.reservoirs t \
+         SET geom = ST_SetSRID(ST_MakePoint(c.x, c.y), {srid}) \
+         FROM epanet.coordinates c \
+         WHERE t.network_id = c.network_id AND t.name = c.node_id AND t.network_id = {nid}"
+    ))
+    .unwrap();
 
     // LineString geometry for pipes: node1 + ordered intermediate vertices + node2
     Spi::run(&format!(
@@ -177,24 +198,97 @@ fn epanet_import(
     ))
     .unwrap();
 
-    // Direct node1→node2 LineString geometry for valves and pumps
-    for table in ["valves", "pumps"] {
-        Spi::run(&format!(
-            "UPDATE epanet.{table} lnk \
-             SET geom = ST_SetSRID( \
-                 ST_MakeLine(ST_MakePoint(c1.x, c1.y), ST_MakePoint(c2.x, c2.y)), \
-                 {srid}) \
-             FROM epanet.coordinates c1, epanet.coordinates c2 \
-             WHERE lnk.network_id = c1.network_id AND lnk.node1 = c1.node_id \
-               AND lnk.network_id = c2.network_id AND lnk.node2 = c2.node_id \
-               AND lnk.network_id = {nid}"
-        ))
-        .unwrap();
-    }
+    // Direct node1→node2 LineString geometry for pumps and valves
+    Spi::run(&format!(
+        "UPDATE epanet.pumps lnk \
+         SET geom = ST_SetSRID(ST_MakeLine(ST_MakePoint(c1.x, c1.y), ST_MakePoint(c2.x, c2.y)), {srid}) \
+         FROM epanet.coordinates c1, epanet.coordinates c2 \
+         WHERE lnk.network_id = c1.network_id AND lnk.node1 = c1.node_id \
+           AND lnk.network_id = c2.network_id AND lnk.node2 = c2.node_id \
+           AND lnk.network_id = {nid}; \
+         UPDATE epanet.valves lnk \
+         SET geom = ST_SetSRID(ST_MakeLine(ST_MakePoint(c1.x, c1.y), ST_MakePoint(c2.x, c2.y)), {srid}) \
+         FROM epanet.coordinates c1, epanet.coordinates c2 \
+         WHERE lnk.network_id = c1.network_id AND lnk.node1 = c1.node_id \
+           AND lnk.network_id = c2.network_id AND lnk.node2 = c2.node_id \
+           AND lnk.network_id = {nid}"
+    ))
+    .unwrap();
 
     metadata::import_metadata_sections(network_id, inp_text);
 
     network_id
+}
+
+/// Reads an INP file from the Postgres server filesystem and imports it.
+/// Requires superuser (server-side file access).
+#[pg_extern]
+fn epanet_import_file(
+    network_name: &str,
+    file_path: &str,
+    srid: default!(i32, "5367"),
+    replace: default!(bool, false),
+) -> i32 {
+    let is_super = Spi::get_one::<bool>(
+        "SELECT COALESCE((SELECT rolsuper FROM pg_roles WHERE rolname = current_user), false)",
+    )
+    .unwrap()
+    .unwrap_or(false);
+    if !is_super {
+        error!("epanet_import_file requires superuser privileges");
+    }
+    let content = std::fs::read_to_string(file_path)
+        .unwrap_or_else(|e| error!("Cannot read file {file_path}: {e}"));
+    epanet_import(network_name, &content, srid, replace)
+}
+
+/// Regenerates a valid EPANET INP from stored tables.
+#[pg_extern]
+fn epanet_export(network_id: i32) -> String {
+    export::export_network(network_id)
+}
+
+/// Rebuilds `networks.inp_text` from current table state.
+#[pg_extern]
+fn epanet_refresh_inp(network_id: i32) -> bool {
+    export::refresh_inp_text(network_id);
+    true
+}
+
+/// Validates topology and reference integrity for a network.
+#[pg_extern]
+fn epanet_validate(
+    network_id: i32,
+) -> TableIterator<
+    'static,
+    (
+        name!(severity, String),
+        name!(issue_type, String),
+        name!(object_type, String),
+        name!(object_id, String),
+        name!(message, String),
+    ),
+> {
+    let issues = validate::validate_network(network_id);
+    TableIterator::new(issues.into_iter().map(|i| {
+        (
+            i.severity,
+            i.issue_type,
+            i.object_type,
+            i.object_id,
+            i.message,
+        )
+    }))
+}
+
+fn inp_text_for_simulation(network_id: i32) -> String {
+    let inp = export::export_network(network_id);
+    let lit = sql_text(&inp);
+    Spi::run(&format!(
+        "UPDATE epanet.networks SET inp_text = {lit} WHERE id = {network_id}"
+    ))
+    .unwrap_or_else(|e| error!("SPI error syncing inp_text: {e:?}"));
+    inp
 }
 
 /// Deletes a network and all associated topology and simulation results (via CASCADE).
@@ -213,55 +307,29 @@ fn epanet_delete(network_id: i32) -> bool {
 #[pg_extern]
 fn epanet_simulate(network_id: i32) -> i32 {
     use crate::ffi::*;
-    use std::ffi::{CStr, CString, c_char};
+    use std::ffi::{CStr, c_char};
 
-    fn epanet_error_message(ec: i32) -> String {
-        unsafe {
-            let mut buf = vec![0 as c_char; 256];
-            EN_geterror(ec, buf.as_mut_ptr(), 255);
-            CStr::from_ptr(buf.as_ptr())
-                .to_string_lossy()
-                .into_owned()
-        }
-    }
+    let inp_text = inp_text_for_simulation(network_id);
+    let files = temp::TempProjectFiles::new(&format!("pg_epanet_{network_id}"));
+    files.write_inp(&inp_text);
 
-    // 1. Fetch the stored INP text
-    let inp_text = Spi::get_one::<String>(&format!(
-        "SELECT inp_text FROM epanet.networks WHERE id = {network_id}"
-    ))
-    .unwrap()
-    .unwrap_or_else(|| error!("No network found with id={network_id}"));
+    let c_inp = temp::path_to_cstring(&files.inp_path);
+    let c_rpt = temp::path_to_cstring(&files.rpt_path);
+    let c_out = temp::path_to_cstring(&files.out_path);
 
-    // 2. Write to temp files required by the EPANET C API
-    let inp_path = format!("/tmp/pg_epanet_{network_id}.inp");
-    let rpt_path = format!("/tmp/pg_epanet_{network_id}.rpt");
-    let out_path = format!("/tmp/pg_epanet_{network_id}.out");
-    std::fs::write(&inp_path, &inp_text)
-        .unwrap_or_else(|e| error!("Cannot write temp file: {e}"));
-
-    let c_inp = CString::new(inp_path.as_str()).unwrap();
-    let c_rpt = CString::new(rpt_path.as_str()).unwrap();
-    let c_out = CString::new(out_path.as_str()).unwrap();
-
-    // 3. Abrir proyecto EPANET
     let ph = unsafe {
         let mut ph: EN_Project = std::ptr::null_mut();
         let ec = EN_createproject(&mut ph);
         if ec != 0 {
-            let _ = std::fs::remove_file(&inp_path);
             error!("EN_createproject failed (code {})", ec);
         }
         let ec = EN_open(ph, c_inp.as_ptr(), c_rpt.as_ptr(), c_out.as_ptr());
-        // EC=200 means formatting warnings — the project remains open and usable.
-        // Any other non-zero code is a fatal error.
         if ec != 0 && ec != 200 {
             EN_deleteproject(ph);
-            let _ = std::fs::remove_file(&inp_path);
-            let _ = std::fs::remove_file(&rpt_path);
-            let mut buf = vec![0 as c_char; 256];
-            EN_geterror(ec, buf.as_mut_ptr(), 255);
-            let msg = CStr::from_ptr(buf.as_ptr()).to_string_lossy().into_owned();
-            error!("EN_open failed (code {}): {}", ec, msg);
+            error!(
+                "EN_open failed (code {ec}): {}",
+                epanet_error_message(ec)
+            );
         }
         ph
     };
@@ -278,10 +346,10 @@ fn epanet_simulate(network_id: i32) -> i32 {
     // 5. Open the EPS hydraulic solver and run the time-step loop
     let open_ec = unsafe { EN_openH(ph) };
     if open_ec >= 100 {
-        unsafe { EN_close(ph); EN_deleteproject(ph); }
-        let _ = std::fs::remove_file(&inp_path);
-        let _ = std::fs::remove_file(&rpt_path);
-        let _ = std::fs::remove_file(&out_path);
+        unsafe {
+            EN_close(ph);
+            EN_deleteproject(ph);
+        }
         error!("EN_openH failed (code {})", open_ec);
     }
     unsafe { EN_initH(ph, EN_NOSAVE) };
@@ -297,10 +365,11 @@ fn epanet_simulate(network_id: i32) -> i32 {
         // Codes 1-99: solver warnings (pump out of range, disconnected network, etc.).
         // Codes >= 100: fatal errors that prevent valid results.
         if ec >= 100 {
-            unsafe { EN_closeH(ph); EN_close(ph); EN_deleteproject(ph); }
-            let _ = std::fs::remove_file(&inp_path);
-            let _ = std::fs::remove_file(&rpt_path);
-            let _ = std::fs::remove_file(&out_path);
+            unsafe {
+                EN_closeH(ph);
+                EN_close(ph);
+                EN_deleteproject(ph);
+            }
             error!("EN_runH failed (code {}) at t={}s", ec, current_time);
         }
         if (1..100).contains(&ec) {
@@ -365,12 +434,13 @@ fn epanet_simulate(network_id: i32) -> i32 {
         }
     }
 
-    unsafe { EN_closeH(ph); EN_close(ph); EN_deleteproject(ph); }
-    let _ = std::fs::remove_file(&inp_path);
-    let _ = std::fs::remove_file(&rpt_path);
-    let _ = std::fs::remove_file(&out_path);
+    unsafe {
+        EN_closeH(ph);
+        EN_close(ph);
+        EN_deleteproject(ph);
+    }
 
-    // 6. Record the simulation run with the actual step count
+    // Record the simulation run with the actual step count
     let run_id = Spi::get_one::<i32>(&format!(
         "INSERT INTO epanet.simulation_runs(network_id, n_steps) \
          VALUES ({network_id}, {n_steps}) RETURNING id"
@@ -451,7 +521,7 @@ fn quality_analysis_enabled(network_id: i32) -> bool {
 #[pg_extern]
 fn epanet_simulate_quality(network_id: i32, run_id: i32) -> i32 {
     use crate::ffi::*;
-    use std::ffi::{CStr, CString, c_char};
+    use std::ffi::{CStr, c_char};
 
     let (run_network_id, expected_steps) = Spi::get_two::<i32, i32>(&format!(
         "SELECT network_id, n_steps FROM epanet.simulation_runs WHERE id = {run_id}"
@@ -474,34 +544,23 @@ fn epanet_simulate_quality(network_id: i32, run_id: i32) -> i32 {
         );
     }
 
-    let inp_text = Spi::get_one::<String>(&format!(
-        "SELECT inp_text FROM epanet.networks WHERE id = {network_id}"
-    ))
-    .unwrap()
-    .unwrap_or_else(|| error!("No network found with id={network_id}"));
+    let inp_text = inp_text_for_simulation(network_id);
+    let files = temp::TempProjectFiles::new(&format!("pg_epanet_{network_id}_wq_{run_id}"));
+    files.write_inp(&inp_text);
 
-    let inp_path = format!("/tmp/pg_epanet_{network_id}_wq_{run_id}.inp");
-    let rpt_path = format!("/tmp/pg_epanet_{network_id}_wq_{run_id}.rpt");
-    let out_path = format!("/tmp/pg_epanet_{network_id}_wq_{run_id}.out");
-    std::fs::write(&inp_path, &inp_text)
-        .unwrap_or_else(|e| error!("Cannot write temp file: {e}"));
-
-    let c_inp = CString::new(inp_path.as_str()).unwrap();
-    let c_rpt = CString::new(rpt_path.as_str()).unwrap();
-    let c_out = CString::new(out_path.as_str()).unwrap();
+    let c_inp = temp::path_to_cstring(&files.inp_path);
+    let c_rpt = temp::path_to_cstring(&files.rpt_path);
+    let c_out = temp::path_to_cstring(&files.out_path);
 
     let ph = unsafe {
         let mut ph: EN_Project = std::ptr::null_mut();
         let ec = EN_createproject(&mut ph);
         if ec != 0 {
-            let _ = std::fs::remove_file(&inp_path);
             error!("EN_createproject failed (code {ec})");
         }
         let ec = EN_open(ph, c_inp.as_ptr(), c_rpt.as_ptr(), c_out.as_ptr());
         if ec != 0 && ec != 200 {
             EN_deleteproject(ph);
-            let _ = std::fs::remove_file(&inp_path);
-            let _ = std::fs::remove_file(&rpt_path);
             error!(
                 "EN_open failed (code {ec}): {}",
                 epanet_error_message(ec)
@@ -524,9 +583,6 @@ fn epanet_simulate_quality(network_id: i32, run_id: i32) -> i32 {
             EN_close(ph);
             EN_deleteproject(ph);
         }
-        let _ = std::fs::remove_file(&inp_path);
-        let _ = std::fs::remove_file(&rpt_path);
-        let _ = std::fs::remove_file(&out_path);
         error!("EN_openH failed (code {open_h_ec})");
     }
     unsafe { EN_initH(ph, EN_NOSAVE) };
@@ -538,9 +594,6 @@ fn epanet_simulate_quality(network_id: i32, run_id: i32) -> i32 {
             EN_close(ph);
             EN_deleteproject(ph);
         }
-        let _ = std::fs::remove_file(&inp_path);
-        let _ = std::fs::remove_file(&rpt_path);
-        let _ = std::fs::remove_file(&out_path);
         error!("EN_openQ failed (code {open_q_ec})");
     }
     unsafe { EN_initQ(ph, EN_NOSAVE) };
@@ -559,9 +612,6 @@ fn epanet_simulate_quality(network_id: i32, run_id: i32) -> i32 {
                 EN_close(ph);
                 EN_deleteproject(ph);
             }
-            let _ = std::fs::remove_file(&inp_path);
-            let _ = std::fs::remove_file(&rpt_path);
-            let _ = std::fs::remove_file(&out_path);
             error!("EN_runH failed (code {ec_h}) at t={current_time}s");
         }
         if (1..100).contains(&ec_h) {
@@ -581,9 +631,6 @@ fn epanet_simulate_quality(network_id: i32, run_id: i32) -> i32 {
                 EN_close(ph);
                 EN_deleteproject(ph);
             }
-            let _ = std::fs::remove_file(&inp_path);
-            let _ = std::fs::remove_file(&rpt_path);
-            let _ = std::fs::remove_file(&out_path);
             error!("EN_runQ failed (code {ec_q}) at t={current_time}s");
         }
         if (1..100).contains(&ec_q) {
@@ -640,9 +687,6 @@ fn epanet_simulate_quality(network_id: i32, run_id: i32) -> i32 {
         EN_close(ph);
         EN_deleteproject(ph);
     }
-    let _ = std::fs::remove_file(&inp_path);
-    let _ = std::fs::remove_file(&rpt_path);
-    let _ = std::fs::remove_file(&out_path);
 
     if expected_steps > 0 && n_steps != expected_steps {
         warning!(
@@ -1579,6 +1623,155 @@ Report Timestep 1:00
         .unwrap()
         .unwrap();
         assert!(below >= 0);
+
+        let _ = Spi::get_one::<bool>(&format!("SELECT epanet_delete({nid})")).unwrap();
+    }
+
+    #[pg_test]
+    fn test_epanet_export_roundtrip() {
+        let inp = r#"[JUNCTIONS]
+J1 100.0 10.0 PD1
+J2 90.0 0.0
+[RESERVOIRS]
+R1 150.0
+[PIPES]
+P1 J1 J2 100.0 200.0 100.0
+[COORDINATES]
+J1 0.0 0.0
+J2 100.0 0.0
+R1 0.0 100.0
+[PATTERNS]
+PD1 1.0 1.2
+[OPTIONS]
+Units LPS
+Quality None mg/L
+"#;
+        let nid = Spi::get_one::<i32>(&format!(
+            "SELECT epanet_import('export_test', $${inp}$$, 4326)"
+        ))
+        .unwrap()
+        .unwrap();
+
+        let exported = Spi::get_one::<String>(&format!("SELECT epanet_export({nid})"))
+            .unwrap()
+            .unwrap();
+        assert!(exported.contains("[JUNCTIONS]"));
+        assert!(exported.contains("J1"));
+        assert!(exported.contains("[END]"));
+
+        let n_j = Spi::get_one::<i64>(&format!(
+            "SELECT count(*)::bigint FROM epanet_junctions({})",
+            crate::sql_text(&exported)
+        ))
+        .unwrap()
+        .unwrap();
+        assert_eq!(n_j, 2);
+
+        let _ = Spi::get_one::<bool>(&format!("SELECT epanet_delete({nid})")).unwrap();
+    }
+
+    #[pg_test]
+    fn test_epanet_import_replace() {
+        let inp1 = "'[JUNCTIONS]\nJ1  50.0\n[COORDINATES]\nJ1  1.0  2.0\n'";
+        let inp2 = "'[JUNCTIONS]\nJ2  60.0\n[COORDINATES]\nJ2  3.0  4.0\n'";
+        let nid1 = Spi::get_one::<i32>(&format!(
+            "SELECT epanet_import('repl_test', {inp1}, 4326, true)"
+        ))
+        .unwrap()
+        .unwrap();
+        let nid2 = Spi::get_one::<i32>(&format!(
+            "SELECT epanet_import('repl_test', {inp2}, 4326, true)"
+        ))
+        .unwrap()
+        .unwrap();
+        assert_ne!(nid1, nid2);
+
+        let n = Spi::get_one::<i64>(
+            "SELECT count(*)::bigint FROM epanet.networks WHERE name = 'repl_test'",
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(n, 1);
+
+        let j = Spi::get_one::<String>(&format!(
+            "SELECT name FROM epanet.junctions WHERE network_id = {nid2}"
+        ))
+        .unwrap()
+        .unwrap();
+        assert_eq!(j, "J2");
+
+        let _ = Spi::get_one::<bool>(&format!("SELECT epanet_delete({nid2})")).unwrap();
+    }
+
+    #[pg_test]
+    fn test_epanet_validate_missing_node() {
+        let inp = r#"[JUNCTIONS]
+J1 100.0
+[PIPES]
+P1 J1 MISSING 100.0 200.0 100.0
+[COORDINATES]
+J1 0.0 0.0
+"#;
+        let nid = Spi::get_one::<i32>(&format!(
+            "SELECT epanet_import('val_test', $${inp}$$, 4326)"
+        ))
+        .unwrap()
+        .unwrap();
+
+        let errors = Spi::get_one::<i64>(&format!(
+            "SELECT count(*)::bigint FROM epanet_validate({nid}) WHERE severity = 'error'"
+        ))
+        .unwrap()
+        .unwrap();
+        assert!(errors >= 1);
+
+        let _ = Spi::get_one::<bool>(&format!("SELECT epanet_delete({nid})")).unwrap();
+    }
+
+    #[pg_test]
+    fn test_epanet_simulate_uses_table_edits() {
+        let inp = r#"[JUNCTIONS]
+J1 100.0 10.0
+J2 90.0 0.0
+[RESERVOIRS]
+R1 150.0
+[PIPES]
+P1 J1 J2 100.0 200.0 100.0
+[COORDINATES]
+J1 0.0 0.0
+J2 100.0 0.0
+R1 0.0 100.0
+[OPTIONS]
+Units LPS
+Headloss H-W
+[TIMES]
+Duration 1:00
+Hydraulic Timestep 1:00
+Report Timestep 1:00
+"#;
+        let nid = Spi::get_one::<i32>(&format!(
+            "SELECT epanet_import('sim_tbl', $${inp}$$, 4326)"
+        ))
+        .unwrap()
+        .unwrap();
+
+        Spi::run(&format!(
+            "UPDATE epanet.junctions SET demand = 999.0 \
+             WHERE network_id = {nid} AND name = 'J1'"
+        ))
+        .unwrap();
+
+        let run_id = Spi::get_one::<i32>(&format!("SELECT epanet_simulate({nid})"))
+            .unwrap()
+            .unwrap();
+        assert!(run_id > 0);
+
+        let stored = Spi::get_one::<String>(&format!(
+            "SELECT inp_text FROM epanet.networks WHERE id = {nid}"
+        ))
+        .unwrap()
+        .unwrap();
+        assert!(stored.contains("999"));
 
         let _ = Spi::get_one::<bool>(&format!("SELECT epanet_delete({nid})")).unwrap();
     }

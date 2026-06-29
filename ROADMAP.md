@@ -33,9 +33,9 @@ flowchart TB
     v02[v0.2.0 Metadata INP]
     v021[v0.2.1 Indexes + docs]
     v03[v0.3 Water quality]
+    v04[v0.4 Round-trip + production]
   end
   subgraph epanet_core [EPANET focus]
-    v04[v0.4 Round-trip + production]
     v05[v0.5 Scenarios + resilience]
     v06[v0.6 Operational integration]
     v07[v0.7 Scale + enterprise]
@@ -43,11 +43,11 @@ flowchart TB
   subgraph horizon [Much later]
     swmm[SWMM stormwater]
   end
-  done --> v04 --> v05 --> v06 --> v07
+  done --> v05 --> v06 --> v07
   v07 -.->|"post-v0.5, post-v0.7"| swmm
 ```
 
-**Recommended order:** v0.4 → v0.5 → v0.6 → v0.7 → SWMM (horizon).
+**Recommended order:** v0.5 → v0.6 → v0.7 → SWMM (horizon).
 
 ---
 
@@ -123,21 +123,21 @@ flowchart TB
 
 ---
 
-## v0.4 — Round-trip, validation & production hardening
+## v0.4 — Round-trip, validation & production hardening ✅
 
 **Goal:** make pg_epanet a two-way model store and production-ready on managed Postgres.
 
-**Industry need:** hydraulic models are maintained in GIS/CMMS; the INP is a snapshot. Without export and validation, pg_epanet is ingest-only. RDS, Supabase, and similar platforms restrict or discourage server-side temp files — blocking `epanet_simulate` today.
-
 **Deliverables:**
 
-- [ ] `epanet_export(network_id) → text` — regenerate a valid INP from stored tables (CONTROLS/RULES as `rule_text` initially; structured columns later)
-- [ ] `epanet_validate(network_id)` — orphan nodes, links referencing missing nodes, disconnected components, dangling curve/pattern references
-- [ ] **Simulate from tables** — rebuild INP from SQL state so edits to demands, status, or options take effect without manual `inp_text` updates
-- [ ] `epanet_import(..., replace := true)` — idempotent import by network name
-- [ ] **Simulation without `/tmp`** — in-memory or `bytea`-backed EPANET project open (critical for locked-down managed Postgres)
-- [ ] Import performance: batch geometry `UPDATE`s (currently one update per node/link type in `src/lib.rs`)
-- [ ] Optional local-only: `epanet_import_file(network_name, file_path, srid)` — superuser, server-side read
+- [x] `epanet_export(network_id) → text` — regenerate a valid INP from stored tables (CONTROLS/RULES as `rule_text`)
+- [x] `epanet_validate(network_id)` — orphan nodes, links referencing missing nodes, disconnected components, dangling curve/pattern references
+- [x] **Simulate from tables** — `epanet_simulate` / `epanet_simulate_quality` rebuild INP from SQL before running; `epanet_refresh_inp` for explicit sync
+- [x] `epanet_import(..., replace := true)` — idempotent import by network name
+- [x] **Configurable temp directory** — GUC `pg_epanet.temp_dir` (EPANET C API still requires file paths; set to a writable dir on managed Postgres)
+- [x] Import performance: batch geometry `UPDATE`s
+- [x] `epanet_import_file(network_name, file_path, srid)` — superuser, server-side read
+
+**Note:** True in-memory EPANET open is not supported by OWA-EPANET; v0.4 uses configurable temp paths instead of hard-coded `/tmp`.
 
 ---
 
@@ -253,6 +253,6 @@ Not scheduled into a semver milestone. Candidates for future prioritisation base
 
 ## How to contribute
 
-Pick an unchecked item from the next open milestone (currently **v0.4**). Open an issue or PR referencing the milestone. For larger industry features (v0.6 digital twin, v0.5 scenarios), start with a design issue before implementation.
+Pick an unchecked item from the next open milestone (currently **v0.5**).
 
 See [README.md](README.md) for current API and [CHANGELOG.md](CHANGELOG.md) for release history.

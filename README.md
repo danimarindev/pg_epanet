@@ -2,7 +2,7 @@
 
 PostgreSQL extension (written in Rust via [pgrx](https://github.com/pgcentralfoundation/pgrx)) that parses EPANET `.inp` water network files and materialises them as queryable SQL tables with PostGIS geometry.
 
-> **Status:** v0.3.0 in development on `main` — [v0.2.1](https://github.com/danimarindev/pg_epanet/releases/tag/v0.2.1) is the latest release. See [CHANGELOG.md](CHANGELOG.md).
+> **Status:** v0.4.0 in development — [v0.3.0](https://github.com/danimarindev/pg_epanet/releases/tag/v0.3.0) merged to `main`. See [CHANGELOG.md](CHANGELOG.md).
 
 ## Why pg_epanet?
 
@@ -34,7 +34,7 @@ For users who already store infrastructure data in PostGIS this eliminates the i
 - PostgreSQL 13–18 (pgrx features for each major version; development target is PG 18)
 - [PostGIS](https://postgis.net/) — installed automatically with `CREATE EXTENSION pg_epanet CASCADE`
 - Rust + [pgrx](https://github.com/pgcentralfoundation/pgrx) 0.19.1 (for building from source)
-- For `epanet_simulate`: the Postgres server process must be able to write temporary files under `/tmp`
+- For simulation: set `pg_epanet.temp_dir` to a writable directory if `/tmp` is restricted (managed Postgres)
 
 ## Docker
 
@@ -306,6 +306,28 @@ epanet_import(network_name text, inp_text text, srid int DEFAULT 5367) → int
 ```
 
 Parses the INP and writes all supported sections to permanent tables under the `epanet` schema. Returns the `network_id`. Each call creates a new network row; same-name networks are not replaced.
+
+```sql
+epanet_import(network_name text, inp_text text, srid int DEFAULT 5367, replace bool DEFAULT false) → int
+```
+
+When `replace` is true, deletes any existing networks with the same name before importing.
+
+```sql
+epanet_import_file(network_name text, file_path text, srid int DEFAULT 5367, replace bool DEFAULT false) → int
+```
+
+Superuser only — reads INP from the Postgres server filesystem.
+
+### Export & validation
+
+```sql
+epanet_export(network_id int) → text
+epanet_refresh_inp(network_id int) → boolean
+epanet_validate(network_id int) → setof (severity, issue_type, object_type, object_id, message)
+```
+
+`epanet_simulate` rebuilds INP from tables automatically. Use `epanet_refresh_inp` to persist table edits back to `networks.inp_text` without simulating.
 
 ### Simulation
 
