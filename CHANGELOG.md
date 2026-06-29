@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] — 2026-06-29
+
+### Added
+- **Scenario model** — `epanet.scenarios` and `epanet.scenario_overrides` tables; base `networks.inp_text` is never modified for what-if studies.
+- `epanet_create_scenario`, `epanet_set_scenario_override`, `epanet_delete_scenario`.
+- `epanet_simulate_scenario(scenario_id)` — builds effective INP in memory (base INP + overrides) and runs EPS.
+- `epanet_compare_runs(run_id_a, run_id_b)` — node pressure and link flow deltas per timestep.
+- `epanet_scenario_pipe_closure(network_id, name, pipe_id)` — pipe-break / criticality convenience.
+- `epanet_scenario_fire_flow(network_id, name, junction_id, required_flow)` — fire-flow demand override.
+- `simulation_runs.scenario_id` — links runs to the scenario that produced them.
+- Module `src/scenario.rs`; `inp::render_sections` for INP overlay serialization.
+
+### Changed
+- **`epanet_simulate`** uses the immutable imported INP snapshot — no longer auto-syncs from SQL tables or overwrites `inp_text`.
+- **`epanet_simulate_quality`** re-applies the same scenario overlay as the hydraulic run when `scenario_id` is set.
+- Use **`epanet_refresh_inp`** explicitly when you want to persist table edits to `inp_text`; use **scenarios** for simulation parameter changes.
+
 ## [0.4.0] — 2026-06-29
 
 ### Added
@@ -91,7 +108,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - When loading large INP files via psql `\COPY`, always use `ORDER BY lineno` with a `SERIAL` column — `ORDER BY ctid` does not guarantee insertion order for large files.
 - First packaged release; future versions upgrade via `ALTER EXTENSION pg_epanet UPDATE`.
 
-[unreleased]: https://github.com/danimarindev/pg_epanet/compare/v0.4.0...main
+[unreleased]: https://github.com/danimarindev/pg_epanet/compare/v0.5.0...main
+[0.5.0]: https://github.com/danimarindev/pg_epanet/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/danimarindev/pg_epanet/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/danimarindev/pg_epanet/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/danimarindev/pg_epanet/compare/v0.2.0...v0.2.1

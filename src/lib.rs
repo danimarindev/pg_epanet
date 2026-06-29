@@ -5,6 +5,7 @@ mod export;
 mod ffi;
 mod inp;
 mod metadata;
+mod scenario;
 mod schema;
 mod temp;
 mod validate;
@@ -281,37 +282,47 @@ fn epanet_validate(
     }))
 }
 
-fn inp_text_for_simulation(network_id: i32) -> String {
-    let inp = export::export_network(network_id);
-    let lit = sql_text(&inp);
-    Spi::run(&format!(
-        "UPDATE epanet.networks SET inp_text = {lit} WHERE id = {network_id}"
-    ))
-    .unwrap_or_else(|e| error!("SPI error syncing inp_text: {e:?}"));
-    inp
+fn epanet_error_message(ec: i32) -> String {
+    use crate::ffi::*;
+    use std::ffi::{CStr, c_char};
+    unsafe {
+        let mut buf = vec![0 as c_char; 256];
+        EN_geterror(ec, buf.as_mut_ptr(), 255);
+        CStr::from_ptr(buf.as_ptr())
+            .to_string_lossy()
+            .into_owned()
+    }
 }
 
-/// Deletes a network and all associated topology and simulation results (via CASCADE).
-/// Returns true when a row was deleted; errors if `network_id` does not exist.
-#[pg_extern]
-fn epanet_delete(network_id: i32) -> bool {
-    Spi::get_one::<bool>(&format!(
-        "DELETE FROM epanet.networks WHERE id = {network_id} RETURNING true"
+fn format_epanet_f64(v: f64) -> String {
+    if v.is_finite() {
+        format!("{v}")
+    } else {
+        "NULL".into()
+    }
+}
+
+/// Reads the immutable base INP snapshot stored at import time.
+/// Simulations never mutate `networks.inp_text`; use scenarios for what-if changes.
+fn base_inp_for_network(network_id: i32) -> String {
+    Spi::get_one::<String>(&format!(
+        "SELECT inp_text FROM epanet.networks WHERE id = {network_id}"
     ))
-    .unwrap_or_else(|e| error!("SPI error deleting network: {e:?}"))
+    .unwrap()
     .unwrap_or_else(|| error!("No network found with id={network_id}"))
 }
 
-/// Runs a full Extended Period Simulation (EPS) using the official OWA-EPANET 2.3 C toolkit.
-/// Results are stored in epanet.node_results and epanet.link_results. Returns the run_id.
-#[pg_extern]
-fn epanet_simulate(network_id: i32) -> i32 {
+fn run_hydraulic_eps(
+    inp_text: &str,
+    network_id: i32,
+    scenario_id: Option<i32>,
+    file_prefix: &str,
+) -> i32 {
     use crate::ffi::*;
     use std::ffi::{CStr, c_char};
 
-    let inp_text = inp_text_for_simulation(network_id);
-    let files = temp::TempProjectFiles::new(&format!("pg_epanet_{network_id}"));
-    files.write_inp(&inp_text);
+    let files = temp::TempProjectFiles::new(file_prefix);
+    files.write_inp(inp_text);
 
     let c_inp = temp::path_to_cstring(&files.inp_path);
     let c_rpt = temp::path_to_cstring(&files.rpt_path);
@@ -334,7 +345,6 @@ fn epanet_simulate(network_id: i32) -> i32 {
         ph
     };
 
-    // 4. Read element counts before opening the hydraulic solver
     let (n_nodes, n_links) = unsafe {
         let mut nn: i32 = 0;
         let mut nl: i32 = 0;
@@ -343,7 +353,6 @@ fn epanet_simulate(network_id: i32) -> i32 {
         (nn, nl)
     };
 
-    // 5. Open the EPS hydraulic solver and run the time-step loop
     let open_ec = unsafe { EN_openH(ph) };
     if open_ec >= 100 {
         unsafe {
@@ -354,7 +363,6 @@ fn epanet_simulate(network_id: i32) -> i32 {
     }
     unsafe { EN_initH(ph, EN_NOSAVE) };
 
-    // Accumulate result rows per time step
     let mut node_parts: Vec<String> = Vec::new();
     let mut link_parts: Vec<String> = Vec::new();
     let mut n_steps: i32 = 0;
@@ -362,8 +370,6 @@ fn epanet_simulate(network_id: i32) -> i32 {
     loop {
         let mut current_time: i64 = 0;
         let ec = unsafe { EN_runH(ph, &mut current_time) };
-        // Codes 1-99: solver warnings (pump out of range, disconnected network, etc.).
-        // Codes >= 100: fatal errors that prevent valid results.
         if ec >= 100 {
             unsafe {
                 EN_closeH(ph);
@@ -373,18 +379,16 @@ fn epanet_simulate(network_id: i32) -> i32 {
             error!("EN_runH failed (code {}) at t={}s", ec, current_time);
         }
         if (1..100).contains(&ec) {
-            let msg = epanet_error_message(ec);
             warning!(
                 "epanet: solver warning {} at t={}s: {}",
                 ec,
                 current_time,
-                msg
+                epanet_error_message(ec)
             );
         }
 
         let step = n_steps;
 
-        // Collect node results for this time step
         unsafe {
             let mut buf = vec![0 as c_char; 64];
             for i in 1..=n_nodes {
@@ -396,16 +400,15 @@ fn epanet_simulate(network_id: i32) -> i32 {
                 EN_getnodevalue(ph, i, EN_PRESSURE, &mut pressure);
                 EN_getnodevalue(ph, i, EN_DEMAND, &mut demand);
                 let name = CStr::from_ptr(buf.as_ptr())
-                    .to_string_lossy().replace('\'', "''");
-                let hv = if head.is_finite() { format!("{head}") } else { "NULL".into() };
-                let pv = if pressure.is_finite() { format!("{pressure}") } else { "NULL".into() };
-                let dv = if demand.is_finite() { format!("{demand}") } else { "NULL".into() };
-                // No outer parens — run_id is prepended when building the INSERT VALUES list
+                    .to_string_lossy()
+                    .replace('\'', "''");
+                let hv = format_epanet_f64(head);
+                let pv = format_epanet_f64(pressure);
+                let dv = format_epanet_f64(demand);
                 node_parts.push(format!("{step},'{name}',{hv},{pv},{dv}"));
             }
         }
 
-        // Collect link results for this time step
         unsafe {
             let mut buf = vec![0 as c_char; 64];
             for i in 1..=n_links {
@@ -417,10 +420,11 @@ fn epanet_simulate(network_id: i32) -> i32 {
                 EN_getlinkvalue(ph, i, EN_VELOCITY, &mut velocity);
                 EN_getlinkvalue(ph, i, EN_HEADLOSS, &mut headloss);
                 let name = CStr::from_ptr(buf.as_ptr())
-                    .to_string_lossy().replace('\'', "''");
-                let fv = if flow.is_finite() { format!("{flow}") } else { "NULL".into() };
-                let vv = if velocity.is_finite() { format!("{velocity}") } else { "NULL".into() };
-                let lv = if headloss.is_finite() { format!("{headloss}") } else { "NULL".into() };
+                    .to_string_lossy()
+                    .replace('\'', "''");
+                let fv = format_epanet_f64(flow);
+                let vv = format_epanet_f64(velocity);
+                let lv = format_epanet_f64(headloss);
                 link_parts.push(format!("{step},'{name}',{fv},{vv},{lv}"));
             }
         }
@@ -440,17 +444,21 @@ fn epanet_simulate(network_id: i32) -> i32 {
         EN_deleteproject(ph);
     }
 
-    // Record the simulation run with the actual step count
+    let scenario_sql = match scenario_id {
+        Some(id) => id.to_string(),
+        None => "NULL".into(),
+    };
+
     let run_id = Spi::get_one::<i32>(&format!(
-        "INSERT INTO epanet.simulation_runs(network_id, n_steps) \
-         VALUES ({network_id}, {n_steps}) RETURNING id"
+        "INSERT INTO epanet.simulation_runs(network_id, scenario_id, n_steps) \
+         VALUES ({network_id}, {scenario_sql}, {n_steps}) RETURNING id"
     ))
     .unwrap_or_else(|e| error!("SPI error inserting simulation_run: {e:?}"))
     .unwrap();
 
-    // 7. Bulk-insert node results (run_id is now known)
     if !node_parts.is_empty() {
-        let vals: String = node_parts.iter()
+        let vals: String = node_parts
+            .iter()
             .map(|r| format!("({run_id},{r})"))
             .collect::<Vec<_>>()
             .join(",");
@@ -461,9 +469,9 @@ fn epanet_simulate(network_id: i32) -> i32 {
         .unwrap_or_else(|e| error!("SPI error inserting node_results: {e:?}"));
     }
 
-    // 8. Bulk-insert link results
     if !link_parts.is_empty() {
-        let vals: String = link_parts.iter()
+        let vals: String = link_parts
+            .iter()
             .map(|r| format!("({run_id},{r})"))
             .collect::<Vec<_>>()
             .join(",");
@@ -477,40 +485,200 @@ fn epanet_simulate(network_id: i32) -> i32 {
     run_id
 }
 
-fn epanet_error_message(ec: i32) -> String {
-    use crate::ffi::*;
-    use std::ffi::{CStr, c_char};
-    unsafe {
-        let mut buf = vec![0 as c_char; 256];
-        EN_geterror(ec, buf.as_mut_ptr(), 255);
-        CStr::from_ptr(buf.as_ptr())
-            .to_string_lossy()
-            .into_owned()
-    }
+/// Creates a scenario for what-if studies. Does not modify the base network or INP.
+#[pg_extern]
+fn epanet_create_scenario(
+    network_id: i32,
+    name: &str,
+    description: default!(Option<&str>, NULL),
+    demand_multiplier: default!(f64, 1.0),
+) -> i32 {
+    let desc_sql = match description {
+        Some(d) => sql_text(d),
+        None => "NULL".into(),
+    };
+    Spi::get_one::<i32>(&format!(
+        "INSERT INTO epanet.scenarios(network_id, name, description, demand_multiplier) \
+         VALUES ({network_id}, {}, {desc_sql}, {demand_multiplier}) RETURNING id",
+        sql_text(name)
+    ))
+    .unwrap_or_else(|e| error!("SPI error creating scenario: {e:?}"))
+    .unwrap()
 }
 
-fn format_epanet_f64(v: f64) -> String {
-    if v.is_finite() {
-        format!("{v}")
-    } else {
-        "NULL".into()
-    }
+/// Sets or replaces a scenario override (base network remains unchanged).
+#[pg_extern]
+fn epanet_set_scenario_override(
+    scenario_id: i32,
+    target_type: &str,
+    target_id: &str,
+    parameter: &str,
+    value: &str,
+) -> bool {
+    Spi::run(&format!(
+        "INSERT INTO epanet.scenario_overrides(scenario_id, target_type, target_id, parameter, value) \
+         VALUES ({scenario_id}, {}, {}, {}, {}) \
+         ON CONFLICT (scenario_id, target_type, target_id, parameter) \
+         DO UPDATE SET value = EXCLUDED.value",
+        sql_text(target_type),
+        sql_text(target_id),
+        sql_text(parameter),
+        sql_text(value)
+    ))
+    .unwrap_or_else(|e| error!("SPI error setting scenario override: {e:?}"));
+    true
 }
 
-fn quality_analysis_enabled(network_id: i32) -> bool {
-    let value = Spi::get_one::<String>(&format!(
-        "SELECT value FROM epanet.options \
-         WHERE network_id = {network_id} AND lower(key) = 'quality'"
+#[pg_extern]
+fn epanet_delete_scenario(scenario_id: i32) -> bool {
+    Spi::get_one::<bool>(&format!(
+        "DELETE FROM epanet.scenarios WHERE id = {scenario_id} RETURNING true"
+    ))
+    .unwrap_or_else(|e| error!("SPI error deleting scenario: {e:?}"))
+    .unwrap_or_else(|| error!("No scenario found with id={scenario_id}"))
+}
+
+/// Convenience: scenario with a single pipe closed (pipe break / criticality study).
+#[pg_extern]
+fn epanet_scenario_pipe_closure(network_id: i32, name: &str, pipe_id: &str) -> i32 {
+    let sid = epanet_create_scenario(network_id, name, None, 1.0);
+    epanet_set_scenario_override(sid, "pipe", pipe_id, "status", "Closed");
+    sid
+}
+
+/// Convenience: fire-flow check via extra demand at a junction.
+#[pg_extern]
+fn epanet_scenario_fire_flow(
+    network_id: i32,
+    name: &str,
+    junction_id: &str,
+    required_flow: f64,
+) -> i32 {
+    let sid = epanet_create_scenario(network_id, name, None, 1.0);
+    epanet_set_scenario_override(
+        sid,
+        "junction",
+        junction_id,
+        "demand",
+        &required_flow.to_string(),
+    );
+    sid
+}
+
+/// Runs EPS using base INP + scenario overrides (never mutates the stored network).
+#[pg_extern]
+fn epanet_simulate_scenario(scenario_id: i32) -> i32 {
+    let (network_id, inp_text) = scenario::effective_inp_for_scenario(scenario_id);
+    run_hydraulic_eps(
+        &inp_text,
+        network_id,
+        Some(scenario_id),
+        &format!("pg_epanet_scenario_{scenario_id}"),
+    )
+}
+
+/// Compares two simulation runs (node pressure and link flow deltas per timestep).
+#[pg_extern]
+fn epanet_compare_runs(
+    run_id_a: i32,
+    run_id_b: i32,
+) -> TableIterator<
+    'static,
+    (
+        name!(result_kind, String),
+        name!(element_id, String),
+        name!(step, i32),
+        name!(metric, String),
+        name!(value_a, Option<f64>),
+        name!(value_b, Option<f64>),
+        name!(delta, Option<f64>),
+    ),
+> {
+    use pgrx::spi::SpiResult;
+    let mut rows: Vec<(String, String, i32, String, Option<f64>, Option<f64>, Option<f64>)> =
+        Vec::new();
+
+    let _ = Spi::connect(|client| -> SpiResult<_> {
+        let q = client.select(
+            &format!(
+                "SELECT 'node'::text AS kind, a.node_id AS eid, a.step, 'pressure'::text AS metric, \
+                        a.pressure AS va, b.pressure AS vb, a.pressure - b.pressure AS delta \
+                 FROM epanet.node_results a \
+                 JOIN epanet.node_results b \
+                   ON a.node_id = b.node_id AND a.step = b.step \
+                 WHERE a.run_id = {run_id_a} AND b.run_id = {run_id_b} \
+                 UNION ALL \
+                 SELECT 'link', a.link_id, a.step, 'flow', a.flow, b.flow, a.flow - b.flow \
+                 FROM epanet.link_results a \
+                 JOIN epanet.link_results b \
+                   ON a.link_id = b.link_id AND a.step = b.step \
+                 WHERE a.run_id = {run_id_a} AND b.run_id = {run_id_b} \
+                 ORDER BY kind, eid, step, metric"
+            ),
+            None,
+            None,
+        )?;
+        for row in q {
+            rows.push((
+                row.get_by_name("kind")?.unwrap(),
+                row.get_by_name("eid")?.unwrap(),
+                row.get_by_name("step")?.unwrap(),
+                row.get_by_name("metric")?.unwrap(),
+                row.get_by_name("va")?,
+                row.get_by_name("vb")?,
+                row.get_by_name("delta")?,
+            ));
+        }
+        Ok(())
+    });
+
+    TableIterator::new(rows.into_iter())
+}
+
+/// Deletes a network and all associated topology and simulation results (via CASCADE).
+/// Returns true when a row was deleted; errors if `network_id` does not exist.
+#[pg_extern]
+fn epanet_delete(network_id: i32) -> bool {
+    Spi::get_one::<bool>(&format!(
+        "DELETE FROM epanet.networks WHERE id = {network_id} RETURNING true"
+    ))
+    .unwrap_or_else(|e| error!("SPI error deleting network: {e:?}"))
+    .unwrap_or_else(|| error!("No network found with id={network_id}"))
+}
+
+/// Runs baseline EPS from the immutable imported INP. Use scenarios for what-if changes.
+#[pg_extern]
+fn epanet_simulate(network_id: i32) -> i32 {
+    let inp_text = base_inp_for_network(network_id);
+    run_hydraulic_eps(
+        &inp_text,
+        network_id,
+        None,
+        &format!("pg_epanet_{network_id}"),
+    )
+}
+
+fn quality_analysis_enabled_from_inp(inp_text: &str) -> bool {
+    let sections = inp::parse_sections(inp_text);
+    let rows = sections.get("OPTIONS").cloned().unwrap_or_default();
+    for fields in rows {
+        if fields.first().is_some_and(|k| k.eq_ignore_ascii_case("Quality")) {
+            let val = fields.get(1).map(|s| s.to_lowercase()).unwrap_or_default();
+            return !val.starts_with("none") && val != "0";
+        }
+    }
+    false
+}
+
+fn effective_inp_for_run(network_id: i32, run_id: i32) -> String {
+    let scenario_id = Spi::get_one::<i32>(&format!(
+        "SELECT scenario_id FROM epanet.simulation_runs WHERE id = {run_id}"
     ))
     .ok()
     .flatten();
-
-    match value {
-        Some(v) => {
-            let lower = v.to_lowercase();
-            !lower.starts_with("none") && lower != "0"
-        }
-        None => false,
+    match scenario_id {
+        Some(sid) => scenario::effective_inp_for_scenario(sid).1,
+        None => base_inp_for_network(network_id),
     }
 }
 
@@ -537,14 +705,14 @@ fn epanet_simulate_quality(network_id: i32, run_id: i32) -> i32 {
     }
     let expected_steps = expected_steps.unwrap_or(0);
 
-    if !quality_analysis_enabled(network_id) {
+    let inp_text = effective_inp_for_run(network_id, run_id);
+    if !quality_analysis_enabled_from_inp(&inp_text) {
         error!(
             "Network {network_id} has Quality=NONE (or no Quality option); \
              set [OPTIONS] Quality to CHEMICAL, AGE, or TRACE in the INP"
         );
     }
 
-    let inp_text = inp_text_for_simulation(network_id);
     let files = temp::TempProjectFiles::new(&format!("pg_epanet_{network_id}_wq_{run_id}"));
     files.write_inp(&inp_text);
 
@@ -1729,7 +1897,7 @@ J1 0.0 0.0
     }
 
     #[pg_test]
-    fn test_epanet_simulate_uses_table_edits() {
+    fn test_epanet_scenario_demand_override() {
         let inp = r#"[JUNCTIONS]
 J1 100.0 10.0
 J2 90.0 0.0
@@ -1750,28 +1918,131 @@ Hydraulic Timestep 1:00
 Report Timestep 1:00
 "#;
         let nid = Spi::get_one::<i32>(&format!(
-            "SELECT epanet_import('sim_tbl', $${inp}$$, 4326)"
+            "SELECT epanet_import('scn_test', $${inp}$$, 4326)"
         ))
         .unwrap()
         .unwrap();
 
-        Spi::run(&format!(
-            "UPDATE epanet.junctions SET demand = 999.0 \
-             WHERE network_id = {nid} AND name = 'J1'"
-        ))
-        .unwrap();
-
-        let run_id = Spi::get_one::<i32>(&format!("SELECT epanet_simulate({nid})"))
-            .unwrap()
-            .unwrap();
-        assert!(run_id > 0);
-
-        let stored = Spi::get_one::<String>(&format!(
+        let original = Spi::get_one::<String>(&format!(
             "SELECT inp_text FROM epanet.networks WHERE id = {nid}"
         ))
         .unwrap()
         .unwrap();
-        assert!(stored.contains("999"));
+        assert!(original.contains("10.0"));
+        assert!(!original.contains("999"));
+
+        let sid = Spi::get_one::<i32>(&format!(
+            "SELECT epanet_create_scenario({nid}, 'high_demand', NULL, 1.0)"
+        ))
+        .unwrap()
+        .unwrap();
+        Spi::run(&format!(
+            "SELECT epanet_set_scenario_override({sid}, 'junction', 'J1', 'demand', '999')"
+        ))
+        .unwrap();
+
+        let run_id = Spi::get_one::<i32>(&format!("SELECT epanet_simulate_scenario({sid})"))
+            .unwrap()
+            .unwrap();
+        assert!(run_id > 0);
+
+        let still_original = Spi::get_one::<String>(&format!(
+            "SELECT inp_text FROM epanet.networks WHERE id = {nid}"
+        ))
+        .unwrap()
+        .unwrap();
+        assert!(!still_original.contains("999"));
+
+        let _ = Spi::get_one::<bool>(&format!("SELECT epanet_delete({nid})")).unwrap();
+    }
+
+    #[pg_test]
+    fn test_epanet_scenario_pipe_closure() {
+        let inp = r#"[JUNCTIONS]
+J1 100.0 10.0
+J2 90.0 0.0
+[RESERVOIRS]
+R1 150.0
+[PIPES]
+P1 J1 J2 100.0 200.0 100.0 0.0 Open
+[COORDINATES]
+J1 0.0 0.0
+J2 100.0 0.0
+R1 0.0 100.0
+[OPTIONS]
+Units LPS
+[TIMES]
+Duration 1:00
+Hydraulic Timestep 1:00
+Report Timestep 1:00
+"#;
+        let nid = Spi::get_one::<i32>(&format!(
+            "SELECT epanet_import('closure_test', $${inp}$$, 4326)"
+        ))
+        .unwrap()
+        .unwrap();
+
+        let sid = Spi::get_one::<i32>(&format!(
+            "SELECT epanet_scenario_pipe_closure({nid}, 'p1_break', 'P1')"
+        ))
+        .unwrap()
+        .unwrap();
+
+        let n = Spi::get_one::<i64>(&format!(
+            "SELECT count(*)::bigint FROM epanet.scenario_overrides \
+             WHERE scenario_id = {sid} AND target_id = 'P1'"
+        ))
+        .unwrap()
+        .unwrap();
+        assert_eq!(n, 1);
+
+        let _ = Spi::get_one::<bool>(&format!("SELECT epanet_delete({nid})")).unwrap();
+    }
+
+    #[pg_test]
+    fn test_epanet_compare_runs() {
+        let inp = r#"[JUNCTIONS]
+J1 100.0 10.0
+J2 90.0 0.0
+[RESERVOIRS]
+R1 150.0
+[PIPES]
+P1 J1 J2 100.0 200.0 100.0
+[COORDINATES]
+J1 0.0 0.0
+J2 100.0 0.0
+R1 0.0 100.0
+[OPTIONS]
+Units LPS
+[TIMES]
+Duration 1:00
+Hydraulic Timestep 1:00
+Report Timestep 1:00
+"#;
+        let nid = Spi::get_one::<i32>(&format!(
+            "SELECT epanet_import('cmp_test', $${inp}$$, 4326)"
+        ))
+        .unwrap()
+        .unwrap();
+
+        let run_a = Spi::get_one::<i32>(&format!("SELECT epanet_simulate({nid})"))
+            .unwrap()
+            .unwrap();
+        let sid = Spi::get_one::<i32>(&format!(
+            "SELECT epanet_scenario_pipe_closure({nid}, 'closed', 'P1')"
+        ))
+        .unwrap()
+        .unwrap();
+        let run_b = Spi::get_one::<i32>(&format!("SELECT epanet_simulate_scenario({sid})"))
+            .unwrap()
+            .unwrap();
+
+        let n = Spi::get_one::<i64>(&format!(
+            "SELECT count(*)::bigint FROM epanet_compare_runs({run_a}, {run_b})"
+        ))
+        .unwrap()
+        .unwrap();
+        assert!(n > 0);
 
         let _ = Spi::get_one::<bool>(&format!("SELECT epanet_delete({nid})")).unwrap();
     }

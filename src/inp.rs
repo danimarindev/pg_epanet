@@ -44,6 +44,84 @@ pub fn section_header(line: &str) -> Option<String> {
     }
 }
 
+/// Render parsed INP sections back to text (used for scenario overlays).
+pub fn render_sections(sections: &HashMap<String, Vec<Vec<String>>>) -> String {
+    const ORDER: &[&str] = &[
+        "TITLE",
+        "JUNCTIONS",
+        "RESERVOIRS",
+        "TANKS",
+        "PIPES",
+        "PUMPS",
+        "VALVES",
+        "DEMANDS",
+        "EMITTERS",
+        "STATUS",
+        "PATTERNS",
+        "CURVES",
+        "CONTROLS",
+        "RULES",
+        "ENERGY",
+        "SOURCES",
+        "REACTIONS",
+        "QUALITY",
+        "MIXING",
+        "TIMES",
+        "REPORT",
+        "OPTIONS",
+        "COORDINATES",
+        "VERTICES",
+        "LABELS",
+        "BACKDROP",
+    ];
+
+    let mut out = String::new();
+    let mut written = std::collections::HashSet::new();
+
+    for &name in ORDER {
+        if let Some(rows) = sections.get(name) {
+            if rows.is_empty() {
+                continue;
+            }
+            out.push('\n');
+            out.push_str(&format!("[{name}]\n"));
+            for fields in rows {
+                if fields.is_empty() {
+                    continue;
+                }
+                if name == "RULES" && fields.len() == 1 {
+                    out.push_str(&fields[0]);
+                    out.push('\n');
+                } else {
+                    out.push(' ');
+                    out.push_str(&fields.join(" "));
+                    out.push('\n');
+                }
+            }
+            written.insert(name);
+        }
+    }
+
+    for (name, rows) in sections {
+        if written.contains(name.as_str()) || rows.is_empty() {
+            continue;
+        }
+        out.push('\n');
+        out.push_str(&format!("[{name}]\n"));
+        for fields in rows {
+            if fields.is_empty() {
+                continue;
+            }
+            out.push(' ');
+            out.push_str(&fields.join(" "));
+            out.push('\n');
+        }
+    }
+
+    out.push_str("\n[END]\n");
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
