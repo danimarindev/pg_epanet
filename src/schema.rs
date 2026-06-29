@@ -114,12 +114,38 @@ CREATE VIEW epanet.nodes AS
     UNION ALL
     SELECT network_id, name, 'reservoir', head,      geom FROM epanet.reservoirs;
 
-CREATE TABLE epanet.simulation_runs (
-    id         SERIAL PRIMARY KEY,
-    network_id INT NOT NULL REFERENCES epanet.networks(id) ON DELETE CASCADE,
-    ran_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
-    n_steps    INT NOT NULL
+CREATE TABLE epanet.scenarios (
+    id                 SERIAL PRIMARY KEY,
+    network_id         INT NOT NULL REFERENCES epanet.networks(id) ON DELETE CASCADE,
+    name               TEXT NOT NULL,
+    description        TEXT,
+    demand_multiplier  FLOAT8 NOT NULL DEFAULT 1.0,
+    created_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (network_id, name)
 );
+
+CREATE INDEX scenarios_network ON epanet.scenarios(network_id);
+
+CREATE TABLE epanet.scenario_overrides (
+    scenario_id  INT NOT NULL REFERENCES epanet.scenarios(id) ON DELETE CASCADE,
+    target_type  TEXT NOT NULL,
+    target_id    TEXT NOT NULL,
+    parameter    TEXT NOT NULL,
+    value        TEXT NOT NULL,
+    PRIMARY KEY (scenario_id, target_type, target_id, parameter)
+);
+
+CREATE INDEX scenario_overrides_scenario ON epanet.scenario_overrides(scenario_id);
+
+CREATE TABLE epanet.simulation_runs (
+    id          SERIAL PRIMARY KEY,
+    network_id  INT NOT NULL REFERENCES epanet.networks(id) ON DELETE CASCADE,
+    scenario_id INT REFERENCES epanet.scenarios(id) ON DELETE SET NULL,
+    ran_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    n_steps     INT NOT NULL
+);
+
+CREATE INDEX simulation_runs_scenario ON epanet.simulation_runs(scenario_id);
 
 CREATE TABLE epanet.node_results (
     run_id   INT NOT NULL REFERENCES epanet.simulation_runs(id) ON DELETE CASCADE,

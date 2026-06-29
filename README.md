@@ -2,7 +2,7 @@
 
 PostgreSQL extension (written in Rust via [pgrx](https://github.com/pgcentralfoundation/pgrx)) that parses EPANET `.inp` water network files and materialises them as queryable SQL tables with PostGIS geometry.
 
-> **Status:** v0.4.0 in development — [v0.3.0](https://github.com/danimarindev/pg_epanet/releases/tag/v0.3.0) merged to `main`. See [CHANGELOG.md](CHANGELOG.md).
+> **Status:** v0.5.0 in development — see [CHANGELOG.md](CHANGELOG.md).
 
 ## Why pg_epanet?
 
@@ -80,7 +80,9 @@ ALTER EXTENSION pg_epanet UPDATE TO '0.2.1';
 
 ## Usage guide
 
-Typical workflow: install extension → import INP → query topology/metadata → simulate → analyse results.
+Typical workflow: install → import INP (baseline) → create scenario → simulate scenario → compare runs.
+
+**Important:** the imported INP is the immutable baseline. Do not rely on SQL table edits for simulation — create a **scenario** with overrides instead.
 
 ### 1. Install
 
@@ -174,37 +176,40 @@ SELECT * FROM epanet_patterns((SELECT inp_text FROM epanet.networks WHERE id = 1
 
 ### 5. Run hydraulic simulation (EPS)
 
-```sql
-SET client_min_messages TO warning;   -- see EPANET solver warnings (codes 1–99)
+**Baseline** (immutable imported INP):
 
+```sql
+SET client_min_messages TO warning;
 SELECT epanet_simulate(1) AS run_id;
--- → inserts one row in simulation_runs, bulk rows in node_results / link_results
 ```
 
-Simulation reads `networks.inp_text` verbatim (patterns, curves, controls in the INP are used even if you only changed SQL tables).
+**Scenario** (what-if — base INP never modified):
 
 ```sql
--- Latest run for a network
-SELECT id, ran_at, n_steps
-FROM epanet.simulation_runs
-WHERE network_id = 1
-ORDER BY id DESC
-LIMIT 1;
+SELECT epanet_create_scenario(1, 'drought', NULL, 1.5) AS scenario_id;
+SELECT epanet_set_scenario_override(1, 'junction', 'J1', 'demand', '50');
+SELECT epanet_simulate_scenario(1) AS run_id;
 
--- Pressure envelope across all timesteps
-SELECT node_id,
-       min(pressure) AS min_p,
-       max(pressure) AS max_p
-FROM epanet.node_results
-WHERE run_id = 1
-GROUP BY node_id
-ORDER BY min_p;
+-- Pipe break
+SELECT epanet_scenario_pipe_closure(1, 'p1_break', 'P4');
+SELECT epanet_simulate_scenario(2);
 
--- One timestep, join to geometry
-SELECT r.step, r.node_id, r.pressure, n.geom
-FROM epanet.node_results r
-JOIN epanet.nodes n ON n.network_id = 1 AND n.node_id = r.node_id
-WHERE r.run_id = 1 AND r.step = 0;
+-- Compare
+SELECT * FROM epanet_compare_runs(1, 2) WHERE result_kind = 'node' LIMIT 10;
+```
+
+Use **`epanet_refresh_inp`** only when you intentionally want to persist table edits to `inp_text`. For simulation parameter changes, always use **scenarios**.
+
+```sql
+-- Latest runs (baseline vs scenario)
+SELECT id, scenario_id, ran_at, n_steps FROM epanet.simulation_runs
+WHERE network_id = 1 ORDER BY id DESC;
+```
+
+### 5b. Water quality (requires Quality ≠ NONE; run hydraulic first)
+
+```sql
+SELECT epanet_simulate_quality(1, 1);
 ```
 
 ### 6. Delete a network
@@ -250,7 +255,7 @@ Metadata tables (`patterns`, `curves`, `options`, …) rely on `(network_id, …
 - Always filter by `network_id` first — every hot path assumes it.
 - Prefer imported tables over table-returning functions for repeated queries (parse once at import).
 - For EPS result tables with millions of rows, filter by `run_id` and optionally `step`; consider partitioning by `run_id` (backlog — see ROADMAP).
-- `epanet_simulate` writes temp files under `/tmp` on the server; bulk parallel runs need disk headroom there.
+- `pg_epanet.temp_dir` GUC or `TMPDIR` for simulation temp files; bulk parallel runs need disk headroom
 
 ## Quick start
 
@@ -327,7 +332,21 @@ epanet_refresh_inp(network_id int) → boolean
 epanet_validate(network_id int) → setof (severity, issue_type, object_type, object_id, message)
 ```
 
-`epanet_simulate` rebuilds INP from tables automatically. Use `epanet_refresh_inp` to persist table edits back to `networks.inp_text` without simulating.
+`epanet_simulate` uses the imported INP baseline. Use scenarios for what-if changes; `epanet_refresh_inp` only when intentionally syncing table edits to `inp_text`.
+
+### Scenarios
+
+```sql
+epanet_create_scenario(network_id, name, description, demand_multiplier) → int
+epanet_set_scenario_override(scenario_id, target_type, target_id, parameter, value) → bool
+epanet_delete_scenario(scenario_id) → bool
+epanet_simulate_scenario(scenario_id) → int
+epanet_compare_runs(run_id_a, run_id_b) → setof (result_kind, element_id, step, metric, value_a, value_b, delta)
+epanet_scenario_pipe_closure(network_id, name, pipe_id) → int
+epanet_scenario_fire_flow(network_id, name, junction_id, required_flow) → int
+```
+
+Override `target_type` values: `junction`, `pipe`, `pump`, `valve`, `option`, `status`, `demand`, `emitter`. Parameters include `demand`, `status`, `roughness`, `roughness_factor`, `speed`, `setting`, etc.
 
 ### Simulation
 
@@ -335,7 +354,7 @@ epanet_validate(network_id int) → setof (severity, issue_type, object_type, ob
 epanet_simulate(network_id int) → int
 ```
 
-Runs a full Extended Period Simulation (EPS) using OWA-EPANET 2.3. Stores per-timestep results in `epanet.node_results` (head, pressure, demand) and `epanet.link_results` (flow, velocity, headloss). Returns the `run_id`. Fatal solver errors (code ≥ 100) abort the simulation; warning codes 1–99 are emitted as PostgreSQL `WARNING` messages (with timestep and EPANET error text).
+Runs baseline EPS from the immutable imported INP. For what-if studies use `epanet_simulate_scenario`.
 
 ### Water quality simulation
 

@@ -34,20 +34,21 @@ flowchart TB
     v021[v0.2.1 Indexes + docs]
     v03[v0.3 Water quality]
     v04[v0.4 Round-trip + production]
+    v05[v0.5 Scenarios + resilience]
   end
   subgraph epanet_core [EPANET focus]
-    v05[v0.5 Scenarios + resilience]
-    v06[v0.6 Operational integration]
-    v07[v0.7 Scale + enterprise]
+    v06[v0.6 Network editing]
+    v07[v0.7 Operational integration]
+    v08[v0.8 Scale + enterprise]
   end
   subgraph horizon [Much later]
     swmm[SWMM stormwater]
   end
-  done --> v05 --> v06 --> v07
-  v07 -.->|"post-v0.5, post-v0.7"| swmm
+  done --> v06 --> v07 --> v08
+  v08 -.->|"post-v0.8"| swmm
 ```
 
-**Recommended order:** v0.5 → v0.6 → v0.7 → SWMM (horizon).
+**Recommended order:** v0.6 → v0.7 → v0.8 → SWMM (horizon).
 
 ---
 
@@ -141,26 +142,48 @@ flowchart TB
 
 ---
 
-## v0.5 — Scenarios, resilience & comparative analytics
+## v0.5 — Scenarios, resilience & comparative analytics ✅
 
-**Goal:** support multi-scenario and resilience workflows entirely in SQL.
+**Goal:** support multi-scenario and resilience workflows entirely in SQL **without mutating the base network**.
 
-**Industry need:** master plans, drought studies, pipe-break analysis, and fire-flow checks require **dozens to hundreds of comparable runs**. Today this means WNTR/Python loops and file management. pg_epanet's parallel bulk-load story applies equally to parallel simulation.
+**Design principle:** the imported INP (`networks.inp_text`) and topology tables are the **canonical baseline**. All what-if changes (demand stress, pipe closure, fire flow, pump speed) live in **`epanet.scenarios`** + **`epanet.scenario_overrides`**. Simulation builds an effective INP in memory only.
 
 **Deliverables:**
 
-- [ ] `epanet.scenarios` table — parameter sets per `network_id` (demand multiplier, pipe status overrides, pump speed, roughness factors, etc.)
-- [ ] `epanet_simulate_scenario(scenario_id)` and/or batch `epanet_simulate_all(network_id, scenario_ids[])`
-- [ ] `epanet.compare_runs(run_id_a, run_id_b)` — pressure/flow deltas per node/link
-- [ ] **Basic criticality** — simulate pipe closure (or subset) and report affected nodes / pressure drop (graph traversal via v0.2.1 endpoint indexes)
-- [ ] **Fire flow** (stretch) — required flow at a junction via demand override + single timestep
-- [ ] Documented pattern for parallel scenario execution (multiple sessions, `pg_background`, or job queue)
+- [x] `epanet.scenarios` + `epanet.scenario_overrides` — parameter sets per `network_id`
+- [x] `epanet_simulate_scenario(scenario_id)` — overlay base INP + run EPS; `simulation_runs.scenario_id` tracks lineage
+- [x] `epanet_compare_runs(run_id_a, run_id_b)` — pressure/flow deltas per node/link
+- [x] **Pipe closure criticality** — `epanet_scenario_pipe_closure(network_id, name, pipe_id)`
+- [x] **Fire flow** — `epanet_scenario_fire_flow(network_id, name, junction_id, required_flow)`
+- [x] Global `demand_multiplier` on scenarios; per-element overrides (junction demand, pipe status/roughness, pump speed, options, status)
 
-SWMM is **not** in scope for v0.5 — this milestone is EPANET resilience only.
+**Parallel execution:** each `epanet_simulate_scenario` call is independent — safe across sessions (see README).
 
 ---
 
-## v0.6 — Operational integration & digital-twin patterns
+## v0.6 — Network topology editing
+
+**Goal:** add, remove, and connect new hydraulic elements without re-importing a full INP — optionally scoped to scenarios so the baseline model stays untouched.
+
+**Industry need:** master plans and capital projects require new pipes, junctions, and pumps. Today users edit INP in desktop EPANET or GIS export tools, then re-import. pg_epanet should support incremental topology changes in SQL, aligned with the scenario-first workflow from v0.5.
+
+**Deliverables:**
+
+- [ ] **`epanet_add_junction(network_id, name, elevation, demand, x, y, srid)`** — insert junction + coordinate + geometry
+- [ ] **`epanet_add_pipe(network_id, name, node1, node2, length, diameter, roughness, ...)`** — insert pipe + LineString geometry (optional `[VERTICES]`)
+- [ ] **`epanet_add_pump` / `epanet_add_valve` / `epanet_add_tank` / `epanet_add_reservoir`** — typed insert helpers with validation
+- [ ] **`epanet_remove_element(network_id, element_type, name)`** — remove node or link with referential checks
+- [ ] **`epanet_connect_nodes(network_id, link_name, node1, node2)`** — re-endpoint an existing link
+- [ ] **Scenario-scoped topology** — `epanet.scenario_elements` table for provisional pipes/junctions that exist only in a scenario overlay (never written to base tables)
+- [ ] **`epanet_merge_scenario_into_base(scenario_id)`** — optional promotion of scenario overrides + provisional elements into the canonical network (explicit, auditable)
+- [ ] **`epanet_validate` extensions** — checks after add/remove (degree count, coordinates, curve refs)
+- [ ] Export/render updates so `epanet_export` and scenario overlays include provisional elements
+
+**Depends on:** v0.5 scenario overlay engine; v0.4 export/validate.
+
+---
+
+## v0.7 — Operational integration & digital-twin patterns
 
 **Goal:** bridge live operational data (SCADA, AMI) with the hydraulic model inside Postgres.
 
@@ -170,15 +193,15 @@ SWMM is **not** in scope for v0.5 — this milestone is EPANET resilience only.
 
 - [ ] `epanet.node_mapping` — `(network_id, node_id, external_id, scada_tag, asset_gid)` with optional join to GIS asset tables
 - [ ] Views or documented conventions: `model_vs_scada` — join `node_results` with external reading tables (e.g. TimescaleDB hypertable in `public.scada_readings`)
-- [ ] `epanet_apply_demands(network_id, source)` — update junction demands from measured or forecast data before simulate
+- [ ] **`epanet_apply_demands_scenario(scenario_id, source)`** — scenario-based demand update (not base network)
 - [ ] **Snapshot versioning** — `network_versions` or temporal tables for topology/INP audit trail
-- [ ] **Calibration hooks** — apply roughness/demand overrides, run simulate, return RMSE vs SCADA (outer optimisation loop stays in SQL; pg_epanet provides simulate + diff primitives)
+- [ ] **Calibration hooks** — roughness/demand overrides via scenarios + RMSE vs SCADA primitives
 
 TimescaleDB integration: documented recipes only — no hard dependency.
 
 ---
 
-## v0.7 — Scale, packaging & multi-tenant
+## v0.8 — Scale, packaging & multi-tenant
 
 **Goal:** production deployment at utility and consultant scale.
 
@@ -196,11 +219,11 @@ TimescaleDB integration: documented recipes only — no hard dependency.
 
 ---
 
-## Horizon — SWMM (post-v0.5, likely post-v0.7)
+## Horizon — SWMM (post-v0.8)
 
 SWMM shares the section tokeniser in `src/inp.rs` but is a distinct product: separate schema, OWA-SWMM FFI, hydrology semantics, and a different user base (stormwater vs distribution).
 
-> **Not planned until the EPANET cycle through v0.5–v0.7 is complete.** Rough estimate: post-v0.7 / v1.x timeframe.
+> **Not planned until the EPANET cycle through v0.6–v0.8 is complete.**
 
 **Phase 1 — parse & import:**
 
@@ -253,6 +276,6 @@ Not scheduled into a semver milestone. Candidates for future prioritisation base
 
 ## How to contribute
 
-Pick an unchecked item from the next open milestone (currently **v0.5**).
+Pick an unchecked item from the next open milestone (currently **v0.6 — network topology editing**).
 
 See [README.md](README.md) for current API and [CHANGELOG.md](CHANGELOG.md) for release history.
