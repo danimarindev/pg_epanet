@@ -1,0 +1,2 @@
+-- Upgrade pg_epanet 0.6.0 → 0.6.1: empty-network builder and full element add APIs
+-- No schema changes; new SQL functions ship with the extension binary.

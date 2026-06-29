@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.1] — 2026-06-29
+
+### Added
+- **`epanet_create_network(name, srid)`** — empty network shell with default OPTIONS/TIMES/REPORT.
+- **Base topology:** `epanet_add_reservoir`, `epanet_add_tank`, `epanet_add_pump`, `epanet_add_valve`.
+- **Scenario topology:** `epanet_add_scenario_reservoir`, `epanet_add_scenario_tank`, `epanet_add_scenario_pump`, `epanet_add_scenario_valve`.
+- **Metadata builder:** `epanet_add_pattern`, `epanet_add_curve`, `epanet_set_option`, `epanet_set_times`, `epanet_set_report`, `epanet_set_reactions`, `epanet_set_quality`, `epanet_set_energy`, `epanet_add_control`, `epanet_add_rule`, `epanet_add_demand`, `epanet_add_emitter`, `epanet_set_link_status`, `epanet_add_source`, `epanet_add_vertex`.
+- **`epanet_merge_scenario_into_base`** now promotes reservoirs, tanks, pumps, and valves.
+- Module `src/builder.rs`; migration `sql/pg_epanet--0.6.0--0.6.1.sql`.
+- `#[pg_test]` building and simulating a network from scratch.
+
 ## [0.6.0] — 2026-06-29
 
 ### Added

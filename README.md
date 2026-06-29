@@ -348,17 +348,38 @@ epanet_scenario_fire_flow(network_id, name, junction_id, required_flow) → int
 
 Override `target_type` values: `junction`, `pipe`, `pump`, `valve`, `option`, `status`, `demand`, `emitter`. Parameters include `demand`, `status`, `roughness`, `roughness_factor`, `speed`, `setting`, etc.
 
+### Build from scratch
+
+Start with an empty network (default OPTIONS/TIMES/REPORT), add elements incrementally, refresh INP, simulate:
+
+```sql
+SELECT epanet_create_network('my_net', 4326);          -- → network_id
+SELECT epanet_add_reservoir(network_id, 'R1', 150.0, 0.0, 100.0);
+SELECT epanet_add_junction(network_id, 'J1', 100.0, 10.0, 100.0, 0.0);
+SELECT epanet_add_pipe(network_id, 'P1', 'R1', 'J1', 100.0, 200.0, 100.0);
+SELECT epanet_add_pattern(network_id, 'PD1', '1.0 1.2 1.0');
+SELECT epanet_add_curve(network_id, 'HC1', '0 40 10 35 20 25');
+SELECT epanet_add_pump(network_id, 'PU1', 'R1', 'J1', 'HEAD', 'HC1');
+SELECT epanet_set_option(network_id, 'Units', 'LPS');
+SELECT epanet_refresh_inp(network_id);
+SELECT epanet_simulate(network_id);
+```
+
+Also available: `epanet_add_tank`, `epanet_add_valve`, `epanet_add_demand`, `epanet_add_control`, `epanet_add_rule`, `epanet_add_vertex`, and other metadata setters.
+
 ### Topology editing
 
 ```sql
 -- Provisional (scenario-only — base INP unchanged)
 SELECT epanet_add_scenario_junction(scenario_id, 'J9', 100.0, 5.0, 200.0, 50.0);
 SELECT epanet_add_scenario_pipe(scenario_id, 'P9', 'J9', 'J1', 80.0, 150.0, 100.0);
+SELECT epanet_add_scenario_reservoir(scenario_id, 'R9', 150.0, 0.0, 50.0);
 SELECT epanet_simulate_scenario(scenario_id);
 
 -- Permanent (base tables — call epanet_refresh_inp to sync INP text)
 SELECT epanet_add_junction(network_id, 'J9', 100.0, 5.0, 200.0, 50.0);
 SELECT epanet_add_pipe(network_id, 'P9', 'J9', 'J1', 80.0, 150.0, 100.0);
+SELECT epanet_add_reservoir(network_id, 'R9', 150.0, 0.0, 50.0);
 SELECT epanet_refresh_inp(network_id);
 
 -- Promote scenario to base

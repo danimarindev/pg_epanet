@@ -1,5 +1,6 @@
 use pgrx::prelude::*;
 
+mod builder;
 mod epanet_sections;
 mod export;
 mod ffi;
@@ -636,6 +637,12 @@ fn epanet_compare_runs(
     TableIterator::new(rows.into_iter())
 }
 
+/// Creates an empty network with default OPTIONS/TIMES/REPORT. Add elements, then `epanet_refresh_inp`.
+#[pg_extern]
+fn epanet_create_network(network_name: &str, srid: default!(i32, "4326")) -> i32 {
+    builder::create_network(network_name, srid)
+}
+
 /// Adds a junction to the base network tables (call `epanet_refresh_inp` to update INP text).
 #[pg_extern]
 fn epanet_add_junction(
@@ -666,6 +673,98 @@ fn epanet_add_pipe(
 ) -> bool {
     topology::add_pipe(
         network_id, name, node1, node2, length, diameter, roughness, minor_loss, status,
+    );
+    true
+}
+
+/// Adds a reservoir to the base network tables.
+#[pg_extern]
+fn epanet_add_reservoir(
+    network_id: i32,
+    name: &str,
+    head: f64,
+    x: f64,
+    y: f64,
+    pattern: default!(Option<&str>, NULL),
+) -> bool {
+    topology::add_reservoir(network_id, name, head, x, y, pattern);
+    true
+}
+
+/// Adds a tank to the base network tables.
+#[pg_extern]
+fn epanet_add_tank(
+    network_id: i32,
+    name: &str,
+    elevation: f64,
+    init_level: f64,
+    min_level: f64,
+    max_level: f64,
+    diameter: f64,
+    min_volume: default!(f64, 0.0),
+    x: f64,
+    y: f64,
+    volume_curve: default!(Option<&str>, NULL),
+    overflow: default!(Option<&str>, NULL),
+) -> bool {
+    topology::add_tank(
+        network_id,
+        name,
+        elevation,
+        init_level,
+        min_level,
+        max_level,
+        diameter,
+        min_volume,
+        x,
+        y,
+        volume_curve,
+        overflow,
+    );
+    true
+}
+
+/// Adds a pump to the base network tables. `pump_type` is `HEAD` or `POWER`.
+#[pg_extern]
+fn epanet_add_pump(
+    network_id: i32,
+    name: &str,
+    node1: &str,
+    node2: &str,
+    pump_type: &str,
+    head_curve: default!(Option<&str>, NULL),
+    power: default!(Option<f64>, NULL),
+    speed: default!(Option<f64>, NULL),
+    pattern: default!(Option<&str>, NULL),
+) -> bool {
+    topology::add_pump(
+        network_id,
+        name,
+        node1,
+        node2,
+        pump_type,
+        head_curve,
+        power,
+        speed,
+        pattern,
+    );
+    true
+}
+
+/// Adds a valve to the base network tables.
+#[pg_extern]
+fn epanet_add_valve(
+    network_id: i32,
+    name: &str,
+    node1: &str,
+    node2: &str,
+    diameter: f64,
+    valve_type: &str,
+    setting: &str,
+    minor_loss: default!(f64, 0.0),
+) -> bool {
+    topology::add_valve(
+        network_id, name, node1, node2, diameter, valve_type, setting, minor_loss,
     );
     true
 }
@@ -704,6 +803,105 @@ fn epanet_add_scenario_pipe(
     true
 }
 
+/// Adds a provisional reservoir that exists only in scenario simulations.
+#[pg_extern]
+fn epanet_add_scenario_reservoir(
+    scenario_id: i32,
+    name: &str,
+    head: f64,
+    x: f64,
+    y: f64,
+    pattern: default!(Option<&str>, NULL),
+) -> bool {
+    topology::add_scenario_reservoir(scenario_id, name, head, x, y, pattern);
+    true
+}
+
+/// Adds a provisional tank that exists only in scenario simulations.
+#[pg_extern]
+fn epanet_add_scenario_tank(
+    scenario_id: i32,
+    name: &str,
+    elevation: f64,
+    init_level: f64,
+    min_level: f64,
+    max_level: f64,
+    diameter: f64,
+    min_volume: default!(f64, 0.0),
+    x: f64,
+    y: f64,
+    volume_curve: default!(Option<&str>, NULL),
+    overflow: default!(Option<&str>, NULL),
+) -> bool {
+    topology::add_scenario_tank(
+        scenario_id,
+        name,
+        elevation,
+        init_level,
+        min_level,
+        max_level,
+        diameter,
+        min_volume,
+        x,
+        y,
+        volume_curve,
+        overflow,
+    );
+    true
+}
+
+/// Adds a provisional pump that exists only in scenario simulations.
+#[pg_extern]
+fn epanet_add_scenario_pump(
+    scenario_id: i32,
+    name: &str,
+    node1: &str,
+    node2: &str,
+    pump_type: &str,
+    head_curve: default!(Option<&str>, NULL),
+    power: default!(Option<f64>, NULL),
+    speed: default!(Option<f64>, NULL),
+    pattern: default!(Option<&str>, NULL),
+) -> bool {
+    topology::add_scenario_pump(
+        scenario_id,
+        name,
+        node1,
+        node2,
+        pump_type,
+        head_curve,
+        power,
+        speed,
+        pattern,
+    );
+    true
+}
+
+/// Adds a provisional valve that exists only in scenario simulations.
+#[pg_extern]
+fn epanet_add_scenario_valve(
+    scenario_id: i32,
+    name: &str,
+    node1: &str,
+    node2: &str,
+    diameter: f64,
+    valve_type: &str,
+    setting: &str,
+    minor_loss: default!(f64, 0.0),
+) -> bool {
+    topology::add_scenario_valve(
+        scenario_id,
+        name,
+        node1,
+        node2,
+        diameter,
+        valve_type,
+        setting,
+        minor_loss,
+    );
+    true
+}
+
 #[pg_extern]
 fn epanet_remove_element(network_id: i32, element_type: &str, name: &str) -> bool {
     topology::remove_element(network_id, element_type, name)
@@ -729,6 +927,109 @@ fn epanet_connect_nodes(
 #[pg_extern]
 fn epanet_merge_scenario_into_base(scenario_id: i32) -> i32 {
     topology::merge_scenario_into_base(scenario_id)
+}
+
+/// Adds or replaces a demand pattern (whitespace-separated multipliers).
+#[pg_extern]
+fn epanet_add_pattern(network_id: i32, pattern_id: &str, multipliers: &str) -> bool {
+    builder::add_pattern(network_id, pattern_id, multipliers);
+    true
+}
+
+/// Adds or replaces a curve from whitespace-separated x y pairs.
+#[pg_extern]
+fn epanet_add_curve(network_id: i32, curve_id: &str, xy_pairs: &str) -> bool {
+    builder::add_curve(network_id, curve_id, xy_pairs);
+    true
+}
+
+#[pg_extern]
+fn epanet_set_option(network_id: i32, key: &str, value: &str) -> bool {
+    builder::set_option(network_id, key, value);
+    true
+}
+
+#[pg_extern]
+fn epanet_set_times(network_id: i32, key: &str, value: &str) -> bool {
+    builder::set_times(network_id, key, value);
+    true
+}
+
+#[pg_extern]
+fn epanet_set_report(network_id: i32, key: &str, value: &str) -> bool {
+    builder::set_report(network_id, key, value);
+    true
+}
+
+#[pg_extern]
+fn epanet_set_reactions(network_id: i32, key: &str, value: &str) -> bool {
+    builder::set_reactions(network_id, key, value);
+    true
+}
+
+#[pg_extern]
+fn epanet_set_quality(network_id: i32, key: &str, value: &str) -> bool {
+    builder::set_quality(network_id, key, value);
+    true
+}
+
+#[pg_extern]
+fn epanet_set_energy(network_id: i32, key: &str, value: &str) -> bool {
+    builder::set_energy(network_id, key, value);
+    true
+}
+
+#[pg_extern]
+fn epanet_add_control(network_id: i32, rule_text: &str) -> bool {
+    builder::add_control(network_id, rule_text);
+    true
+}
+
+#[pg_extern]
+fn epanet_add_rule(network_id: i32, rule_id: &str, rule_text: &str) -> bool {
+    builder::add_rule(network_id, rule_id, rule_text);
+    true
+}
+
+#[pg_extern]
+fn epanet_add_demand(
+    network_id: i32,
+    junction_id: &str,
+    demand: f64,
+    pattern: default!(Option<&str>, NULL),
+) -> bool {
+    builder::add_demand(network_id, junction_id, demand, pattern);
+    true
+}
+
+#[pg_extern]
+fn epanet_add_emitter(network_id: i32, junction_id: &str, coefficient: f64) -> bool {
+    builder::add_emitter(network_id, junction_id, coefficient);
+    true
+}
+
+#[pg_extern]
+fn epanet_set_link_status(network_id: i32, link_id: &str, status_value: &str) -> bool {
+    builder::set_link_status(network_id, link_id, status_value);
+    true
+}
+
+#[pg_extern]
+fn epanet_add_source(
+    network_id: i32,
+    node_id: &str,
+    source_type: &str,
+    quality: f64,
+    pattern: default!(Option<&str>, NULL),
+) -> bool {
+    builder::add_source(network_id, node_id, source_type, quality, pattern);
+    true
+}
+
+#[pg_extern]
+fn epanet_add_vertex(network_id: i32, link_id: &str, x: f64, y: f64) -> bool {
+    builder::add_vertex(network_id, link_id, x, y);
+    true
 }
 
 /// Deletes a network and all associated topology and simulation results (via CASCADE).
@@ -2233,6 +2534,55 @@ R1 0.0 100.0
         .unwrap()
         .unwrap();
         assert!(geom);
+
+        let _ = Spi::get_one::<bool>(&format!("SELECT epanet_delete({nid})")).unwrap();
+    }
+
+    #[pg_test]
+    fn test_epanet_create_network_from_scratch() {
+        let nid = Spi::get_one::<i32>(&format!(
+            "SELECT epanet_create_network('scratch_net', 4326)"
+        ))
+        .unwrap()
+        .unwrap();
+
+        Spi::run(&format!(
+            "SELECT epanet_add_reservoir({nid}, 'R1', 150.0, 0.0, 100.0, NULL)"
+        ))
+        .unwrap();
+        Spi::run(&format!(
+            "SELECT epanet_add_junction({nid}, 'J1', 100.0, 10.0, 100.0, 0.0, NULL)"
+        ))
+        .unwrap();
+        Spi::run(&format!(
+            "SELECT epanet_add_pipe({nid}, 'P1', 'R1', 'J1', 100.0, 200.0, 100.0, 0.0, 'Open')"
+        ))
+        .unwrap();
+        Spi::run(&format!(
+            "SELECT epanet_set_times({nid}, 'Duration', '1:00')"
+        ))
+        .unwrap();
+        Spi::run(&format!(
+            "SELECT epanet_set_times({nid}, 'Hydraulic Timestep', '1:00')"
+        ))
+        .unwrap();
+        Spi::run(&format!(
+            "SELECT epanet_set_times({nid}, 'Report Timestep', '1:00')"
+        ))
+        .unwrap();
+        Spi::run(&format!("SELECT epanet_refresh_inp({nid})")).unwrap();
+
+        let run_id = Spi::get_one::<i32>(&format!("SELECT epanet_simulate({nid})"))
+            .unwrap()
+            .unwrap();
+        assert!(run_id > 0);
+
+        let n_nodes = Spi::get_one::<i64>(&format!(
+            "SELECT count(*)::bigint FROM epanet.node_results WHERE run_id = {run_id}"
+        ))
+        .unwrap()
+        .unwrap();
+        assert!(n_nodes > 0);
 
         let _ = Spi::get_one::<bool>(&format!("SELECT epanet_delete({nid})")).unwrap();
     }
