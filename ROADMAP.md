@@ -35,20 +35,20 @@ flowchart TB
     v03[v0.3 Water quality]
     v04[v0.4 Round-trip + production]
     v05[v0.5 Scenarios + resilience]
+    v06[v0.6 Network editing]
   end
   subgraph epanet_core [EPANET focus]
-    v06[v0.6 Network editing]
     v07[v0.7 Operational integration]
     v08[v0.8 Scale + enterprise]
   end
   subgraph horizon [Much later]
     swmm[SWMM stormwater]
   end
-  done --> v06 --> v07 --> v08
+  done --> v07 --> v08
   v08 -.->|"post-v0.8"| swmm
 ```
 
-**Recommended order:** v0.6 → v0.7 → v0.8 → SWMM (horizon).
+**Recommended order:** v0.7 → v0.8 → SWMM (horizon).
 
 ---
 
@@ -161,25 +161,25 @@ flowchart TB
 
 ---
 
-## v0.6 — Network topology editing
+## v0.6 — Network topology editing ✅
 
-**Goal:** add, remove, and connect new hydraulic elements without re-importing a full INP — optionally scoped to scenarios so the baseline model stays untouched.
-
-**Industry need:** master plans and capital projects require new pipes, junctions, and pumps. Today users edit INP in desktop EPANET or GIS export tools, then re-import. pg_epanet should support incremental topology changes in SQL, aligned with the scenario-first workflow from v0.5.
+**Goal:** add, remove, and connect hydraulic elements without re-importing a full INP — with scenario-scoped provisional elements so the baseline stays untouched.
 
 **Deliverables:**
 
-- [ ] **`epanet_add_junction(network_id, name, elevation, demand, x, y, srid)`** — insert junction + coordinate + geometry
-- [ ] **`epanet_add_pipe(network_id, name, node1, node2, length, diameter, roughness, ...)`** — insert pipe + LineString geometry (optional `[VERTICES]`)
-- [ ] **`epanet_add_pump` / `epanet_add_valve` / `epanet_add_tank` / `epanet_add_reservoir`** — typed insert helpers with validation
-- [ ] **`epanet_remove_element(network_id, element_type, name)`** — remove node or link with referential checks
-- [ ] **`epanet_connect_nodes(network_id, link_name, node1, node2)`** — re-endpoint an existing link
-- [ ] **Scenario-scoped topology** — `epanet.scenario_elements` table for provisional pipes/junctions that exist only in a scenario overlay (never written to base tables)
-- [ ] **`epanet_merge_scenario_into_base(scenario_id)`** — optional promotion of scenario overrides + provisional elements into the canonical network (explicit, auditable)
-- [ ] **`epanet_validate` extensions** — checks after add/remove (degree count, coordinates, curve refs)
-- [ ] Export/render updates so `epanet_export` and scenario overlays include provisional elements
+- [x] **`epanet_add_junction` / `epanet_add_pipe`** — insert into base tables + coordinates + geometry
+- [x] **`epanet_add_scenario_junction` / `epanet_add_scenario_pipe`** — provisional elements in `epanet.scenario_elements`
+- [x] **`epanet_remove_element` / `epanet_remove_scenario_element`**
+- [x] **`epanet_connect_nodes`** — re-endpoint pipes/pumps/valves
+- [x] **`epanet.scenario_elements`** + **`epanet.scenario_element_vertices`** — overlay-only topology
+- [x] **`epanet_merge_scenario_into_base(scenario_id)`** — promote scenario elements + overrides, refresh INP
+- [x] Scenario simulate applies provisional elements to effective INP
 
-**Depends on:** v0.5 scenario overlay engine; v0.4 export/validate.
+**Follow-ups (v0.6.x / v0.7):**
+
+- [ ] `epanet_add_pump`, `epanet_add_valve`, `epanet_add_tank`, `epanet_add_reservoir` helpers
+- [ ] `epanet_validate` extensions after topology edits
+- [ ] `epanet_export` includes scenario elements when exporting effective state
 
 ---
 
@@ -276,6 +276,6 @@ Not scheduled into a semver milestone. Candidates for future prioritisation base
 
 ## How to contribute
 
-Pick an unchecked item from the next open milestone (currently **v0.6 — network topology editing**).
+Pick an unchecked item from the next open milestone (currently **v0.7 — operational integration**).
 
 See [README.md](README.md) for current API and [CHANGELOG.md](CHANGELOG.md) for release history.

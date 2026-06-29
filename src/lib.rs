@@ -8,6 +8,7 @@ mod metadata;
 mod scenario;
 mod schema;
 mod temp;
+mod topology;
 mod validate;
 
 ::pgrx::pg_module_magic!(name, version);
@@ -633,6 +634,101 @@ fn epanet_compare_runs(
     });
 
     TableIterator::new(rows.into_iter())
+}
+
+/// Adds a junction to the base network tables (call `epanet_refresh_inp` to update INP text).
+#[pg_extern]
+fn epanet_add_junction(
+    network_id: i32,
+    name: &str,
+    elevation: f64,
+    demand: f64,
+    x: f64,
+    y: f64,
+    pattern: default!(Option<&str>, NULL),
+) -> bool {
+    topology::add_junction(network_id, name, elevation, demand, x, y, pattern);
+    true
+}
+
+/// Adds a pipe to the base network tables.
+#[pg_extern]
+fn epanet_add_pipe(
+    network_id: i32,
+    name: &str,
+    node1: &str,
+    node2: &str,
+    length: f64,
+    diameter: f64,
+    roughness: f64,
+    minor_loss: default!(f64, 0.0),
+    status: default!(&str, "Open"),
+) -> bool {
+    topology::add_pipe(
+        network_id, name, node1, node2, length, diameter, roughness, minor_loss, status,
+    );
+    true
+}
+
+/// Adds a provisional junction that exists only in scenario simulations.
+#[pg_extern]
+fn epanet_add_scenario_junction(
+    scenario_id: i32,
+    name: &str,
+    elevation: f64,
+    demand: f64,
+    x: f64,
+    y: f64,
+    pattern: default!(Option<&str>, NULL),
+) -> bool {
+    topology::add_scenario_junction(scenario_id, name, elevation, demand, x, y, pattern);
+    true
+}
+
+/// Adds a provisional pipe that exists only in scenario simulations.
+#[pg_extern]
+fn epanet_add_scenario_pipe(
+    scenario_id: i32,
+    name: &str,
+    node1: &str,
+    node2: &str,
+    length: f64,
+    diameter: f64,
+    roughness: f64,
+    minor_loss: default!(f64, 0.0),
+    status: default!(&str, "Open"),
+) -> bool {
+    topology::add_scenario_pipe(
+        scenario_id, name, node1, node2, length, diameter, roughness, minor_loss, status,
+    );
+    true
+}
+
+#[pg_extern]
+fn epanet_remove_element(network_id: i32, element_type: &str, name: &str) -> bool {
+    topology::remove_element(network_id, element_type, name)
+}
+
+#[pg_extern]
+fn epanet_remove_scenario_element(scenario_id: i32, element_type: &str, name: &str) -> bool {
+    topology::remove_scenario_element(scenario_id, element_type, name)
+}
+
+#[pg_extern]
+fn epanet_connect_nodes(
+    network_id: i32,
+    link_type: &str,
+    link_name: &str,
+    node1: &str,
+    node2: &str,
+) -> bool {
+    topology::connect_nodes(network_id, link_type, link_name, node1, node2)
+}
+
+/// Promotes scenario elements and overrides into the base network and refreshes INP.
+#[pg_extern]
+fn epanet_merge_scenario_into_base(scenario_id: i32) -> i32 {
+    topology::merge_scenario_into_base(scenario_id)
 }
 
 /// Deletes a network and all associated topology and simulation results (via CASCADE).
@@ -2043,6 +2139,100 @@ Report Timestep 1:00
         .unwrap()
         .unwrap();
         assert!(n > 0);
+
+        let _ = Spi::get_one::<bool>(&format!("SELECT epanet_delete({nid})")).unwrap();
+    }
+
+    #[pg_test]
+    fn test_epanet_add_scenario_junction_and_pipe() {
+        let inp = r#"[JUNCTIONS]
+J1 100.0 10.0
+[RESERVOIRS]
+R1 150.0
+[PIPES]
+P1 J1 R1 100.0 200.0 100.0
+[COORDINATES]
+J1 0.0 0.0
+R1 0.0 100.0
+[OPTIONS]
+Units LPS
+[TIMES]
+Duration 1:00
+Hydraulic Timestep 1:00
+Report Timestep 1:00
+"#;
+        let nid = Spi::get_one::<i32>(&format!(
+            "SELECT epanet_import('topo_scn', $${inp}$$, 4326)"
+        ))
+        .unwrap()
+        .unwrap();
+
+        let sid = Spi::get_one::<i32>(&format!(
+            "SELECT epanet_create_scenario({nid}, 'extension', NULL, 1.0)"
+        ))
+        .unwrap()
+        .unwrap();
+
+        Spi::run(&format!(
+            "SELECT epanet_add_scenario_junction({sid}, 'J2', 95.0, 5.0, 100.0, 0.0, NULL)"
+        ))
+        .unwrap();
+        Spi::run(&format!(
+            "SELECT epanet_add_scenario_pipe({sid}, 'P2', 'J2', 'R1', 50.0, 150.0, 100.0, 0.0, 'Open')"
+        ))
+        .unwrap();
+
+        let base_j = Spi::get_one::<i64>(&format!(
+            "SELECT count(*)::bigint FROM epanet.junctions WHERE network_id = {nid} AND name = 'J2'"
+        ))
+        .unwrap()
+        .unwrap();
+        assert_eq!(base_j, 0);
+
+        let run_id = Spi::get_one::<i32>(&format!("SELECT epanet_simulate_scenario({sid})"))
+            .unwrap()
+            .unwrap();
+        assert!(run_id > 0);
+
+        let _ = Spi::get_one::<bool>(&format!("SELECT epanet_delete({nid})")).unwrap();
+    }
+
+    #[pg_test]
+    fn test_epanet_add_junction_base() {
+        let inp = r#"[JUNCTIONS]
+J1 100.0 10.0
+[RESERVOIRS]
+R1 150.0
+[PIPES]
+P1 J1 R1 100.0 200.0 100.0
+[COORDINATES]
+J1 0.0 0.0
+R1 0.0 100.0
+"#;
+        let nid = Spi::get_one::<i32>(&format!(
+            "SELECT epanet_import('topo_base', $${inp}$$, 4326)"
+        ))
+        .unwrap()
+        .unwrap();
+
+        Spi::run(&format!(
+            "SELECT epanet_add_junction({nid}, 'J2', 95.0, 5.0, 100.0, 0.0, NULL)"
+        ))
+        .unwrap();
+
+        let n = Spi::get_one::<i64>(&format!(
+            "SELECT count(*)::bigint FROM epanet.junctions WHERE network_id = {nid} AND name = 'J2'"
+        ))
+        .unwrap()
+        .unwrap();
+        assert_eq!(n, 1);
+
+        let geom = Spi::get_one::<bool>(&format!(
+            "SELECT geom IS NOT NULL FROM epanet.junctions WHERE network_id = {nid} AND name = 'J2'"
+        ))
+        .unwrap()
+        .unwrap();
+        assert!(geom);
 
         let _ = Spi::get_one::<bool>(&format!("SELECT epanet_delete({nid})")).unwrap();
     }
