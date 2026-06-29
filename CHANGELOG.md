@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] — 2026-06-29
+
+### Added
+- `epanet_export(network_id)` — regenerate EPANET INP text from stored tables.
+- `epanet_refresh_inp(network_id)` — sync `networks.inp_text` from table state.
+- `epanet_validate(network_id)` — table-returning topology/reference checks (missing nodes, dangling patterns/curves, orphans, disconnected components).
+- `epanet_import(..., replace := false)` — when `replace` is true, deletes existing networks with the same name before import.
+- `epanet_import_file(name, path, srid, replace)` — superuser server-side INP file import.
+- GUC `pg_epanet.temp_dir` — configurable directory for simulation temp files (defaults to `TMPDIR` or `/tmp`).
+
+### Changed
+- `epanet_simulate` and `epanet_simulate_quality` rebuild INP from SQL tables before running, so edits to demands, status, options, etc. take effect automatically.
+- Simulation temp files use `pg_epanet.temp_dir` instead of hard-coded `/tmp`.
+- Import geometry updates batched into fewer SQL statements for junctions/tanks/reservoirs and pumps/valves.
+
 ## [0.3.0] — 2026-06-29
 
 ### Added
@@ -76,7 +91,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - When loading large INP files via psql `\COPY`, always use `ORDER BY lineno` with a `SERIAL` column — `ORDER BY ctid` does not guarantee insertion order for large files.
 - First packaged release; future versions upgrade via `ALTER EXTENSION pg_epanet UPDATE`.
 
-[unreleased]: https://github.com/danimarindev/pg_epanet/compare/v0.3.0...main
+[unreleased]: https://github.com/danimarindev/pg_epanet/compare/v0.4.0...main
+[0.4.0]: https://github.com/danimarindev/pg_epanet/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/danimarindev/pg_epanet/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/danimarindev/pg_epanet/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/danimarindev/pg_epanet/compare/v0.1.0...v0.2.0
